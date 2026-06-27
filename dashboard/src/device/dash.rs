@@ -111,10 +111,11 @@ impl Dash {
     pub fn set_brightness(&mut self, pct: i32) {
         self.command(&format!("@B{pct}"));
     }
-    /// Push the display orientation (applied live on the device, no reboot).
-    pub fn push_disp(&mut self, rot: i32, flip_h: bool, flip_v: bool) -> bool {
+    /// Push the display config. Orientation applies live; a colour-order/invert
+    /// change reboots the device (those are set at panel init).
+    pub fn push_disp(&mut self, rot: i32, flip_h: bool, flip_v: bool, bgr: bool, inv: bool) -> bool {
         let (ok, r) = self.command(&format!(
-            "@DO{{\"rot\":{rot},\"fh\":{flip_h},\"fv\":{flip_v}}}"
+            "@DO{{\"rot\":{rot},\"fh\":{flip_h},\"fv\":{flip_v},\"bgr\":{bgr},\"inv\":{inv}}}"
         ));
         self.logln(&format!("disp: {r}"));
         ok

@@ -59,6 +59,8 @@ component EditPanel inherits Card {
             VerticalLayout { spacing: 2px; horizontal-stretch: 1; Text { text: "H"; color: Theme.text3; font-size: 9px; }
                 LineEdit { text: "\{RaceLayout.edit.h}"; input-type: number; edited(t) => { RaceLayout.set-node-geo(RaceLayout.edit.x, RaceLayout.edit.y, RaceLayout.edit.w, t.to-float()); } } }
         }
+        // (X/Y/W/H share a row; on a narrow window widen the dashboard so the
+        // editor panel + canvas both fit — the window min-width is 1120px.)
         HorizontalLayout {
             Text { text: "COLOR RULES"; color: Theme.text3; font-size: 10px; letter-spacing: 0.5px; vertical-alignment: center; }
             Rectangle { }
@@ -261,40 +263,37 @@ export component RaceScreen inherits Rectangle {
                         Rectangle { width: 12px; }
                         Text { text: DeviceCaps.main-res; color: Theme.text3; font-family: Theme.mono-font; font-size: 11px; vertical-alignment: center; }
                     }
-                    // live mirror — fit to stage, then * zoom; pan with the Flickable when zoomed in
+                    // live mirror — fit to stage, then * zoom; centred (no Flickable, so
+                    // node drag/resize gestures aren't intercepted by flick-panning).
                     stage := Rectangle {
                         vertical-stretch: 1;
                         clip: true;
                         property <float> fit: min(1.0, min((self.width - 24px) / (DeviceCaps.main-w * 1px), (self.height - 24px) / (DeviceCaps.main-h * 1px))) * root.zoom;
-                        Flickable {
-                            viewport-width: max(stage.width, DeviceCaps.main-w * 1px * stage.fit + 24px);
-                            viewport-height: max(stage.height, DeviceCaps.main-h * 1px * stage.fit + 24px);
-                            Rectangle {
-                                width: DeviceCaps.main-w * 1px * stage.fit + 12px;
-                                height: DeviceCaps.main-h * 1px * stage.fit + 12px;
-                                x: 0;
-                                y: 0;
-                                drop-shadow-blur: 18px;
-                                drop-shadow-color: #000000;
-                                background: #000000;
-                                border-radius: 16px;
-                                // The real pith-ui engine renders this image (same fonts +
-                                // draw code as the device), so it is pixel-identical to the panel.
-                                Image {
-                                    x: 6px;
-                                    y: 6px;
-                                    width: parent.width - 12px;
-                                    height: parent.height - 12px;
-                                    source: RaceLayout.preview-image;
-                                    image-rendering: pixelated;
-                                }
-                                // interactive freeform overlays (select / drag / resize)
-                                for n in RaceLayout.nodes: NodeOverlay {
-                                    node: n;
-                                    scale: stage.fit;
-                                    ox: 6px;
-                                    oy: 6px;
-                                }
+                        canvas := Rectangle {
+                            width: DeviceCaps.main-w * 1px * stage.fit + 12px;
+                            height: DeviceCaps.main-h * 1px * stage.fit + 12px;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            drop-shadow-blur: 18px;
+                            drop-shadow-color: #000000;
+                            background: #000000;
+                            border-radius: 16px;
+                            // The real pith-ui engine renders this image (same fonts +
+                            // draw code as the device), so it is pixel-identical to the panel.
+                            Image {
+                                x: 6px;
+                                y: 6px;
+                                width: parent.width - 12px;
+                                height: parent.height - 12px;
+                                source: RaceLayout.preview-image;
+                                image-rendering: pixelated;
+                            }
+                            // interactive freeform overlays (select / drag / resize)
+                            for n in RaceLayout.nodes: NodeOverlay {
+                                node: n;
+                                scale: stage.fit;
+                                ox: 6px;
+                                oy: 6px;
                             }
                         }
                     }
@@ -303,7 +302,7 @@ export component RaceScreen inherits Rectangle {
             }
             // freeform editor panel
             VerticalLayout {
-                width: 360px;
+                width: 320px;
                 spacing: 12px;
                 // display selector (the DDU drives two panels)
                 if RaceLayout.display-count > 1: HorizontalLayout {
@@ -338,9 +337,11 @@ export component RaceScreen inherits Rectangle {
                         }
                         Flickable {
                             height: 116px;
+                            vertical-stretch: 0;
                             viewport-height: cat-flow.preferred-height;
                             cat-flow := VerticalLayout {
                                 spacing: 5px;
+                                alignment: start;
                                 for md in RaceLayout.catalog: Rectangle {
                                     height: 25px;
                                     border-radius: 5px;

@@ -262,10 +262,14 @@ pub fn apply_caps(ui: &AppWindow, s: &mut State, line: &str) {
             .clamp(0, 3);
         s.disp_flip_h = d.get("fh").and_then(|x| x.as_bool()).unwrap_or(s.disp_flip_h);
         s.disp_flip_v = d.get("fv").and_then(|x| x.as_bool()).unwrap_or(s.disp_flip_v);
+        s.disp_bgr = d.get("bgr").and_then(|x| x.as_bool()).unwrap_or(s.disp_bgr);
+        s.disp_inv = d.get("inv").and_then(|x| x.as_bool()).unwrap_or(s.disp_inv);
         let dc = ui.global::<crate::DeviceCfg>();
         dc.set_disp_rot(s.disp_rot);
         dc.set_disp_flip_h(s.disp_flip_h);
         dc.set_disp_flip_v(s.disp_flip_v);
+        dc.set_disp_bgr(s.disp_bgr);
+        dc.set_disp_inv(s.disp_inv);
     }
 
     let fwv = j

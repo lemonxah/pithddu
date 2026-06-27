@@ -225,7 +225,9 @@ fn dispatch(t: Transport, line: &str) {
                 let rot = v.get("rot").and_then(|x| x.as_u64()).unwrap_or(3) as u8;
                 let fh = v.get("fh").and_then(|x| x.as_bool()).unwrap_or(false);
                 let fv = v.get("fv").and_then(|x| x.as_bool()).unwrap_or(false);
-                crate::state::with(|s| s.apply_disp(rot, fh, fv));
+                let bgr = v.get("bgr").and_then(|x| x.as_bool()).unwrap_or(true);
+                let inv = v.get("inv").and_then(|x| x.as_bool()).unwrap_or(false);
+                crate::state::with(|s| s.apply_disp(rot, fh, fv, bgr, inv));
                 reply(t, "OK\n");
             }
             Err(_) => reply(t, "ERR\n"),

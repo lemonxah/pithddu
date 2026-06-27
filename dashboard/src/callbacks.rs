@@ -780,21 +780,27 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
             c.lock().led_rgbw = if v { 1 } else { 0 };
         });
         let c = ctx.clone();
-        dc.on_set_disp(move |rot, fh, fv| {
+        dc.on_set_disp(move |rot, fh, fv, bgr, inv| {
             if let Some(u) = c.ui.upgrade() {
+                let r = rot.clamp(0, 3);
                 {
                     let mut st = c.lock();
-                    st.disp_rot = rot.clamp(0, 3);
+                    st.disp_rot = r;
                     st.disp_flip_h = fh;
                     st.disp_flip_v = fv;
+                    st.disp_bgr = bgr;
+                    st.disp_inv = inv;
                 }
-                // Reflect immediately, then apply live on the device (no reboot).
+                // Reflect immediately, then push to the device (orientation live;
+                // colour-order/invert reboots the device to re-init the panel).
                 let dc = u.global::<DeviceCfg>();
-                dc.set_disp_rot(rot.clamp(0, 3));
+                dc.set_disp_rot(r);
                 dc.set_disp_flip_h(fh);
                 dc.set_disp_flip_v(fv);
+                dc.set_disp_bgr(bgr);
+                dc.set_disp_inv(inv);
                 if c.dash().connected() {
-                    c.dash().push_disp(rot.clamp(0, 3), fh, fv);
+                    c.dash().push_disp(r, fh, fv, bgr, inv);
                 }
             }
         });

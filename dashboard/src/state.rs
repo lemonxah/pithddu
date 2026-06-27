@@ -180,6 +180,8 @@ pub struct State {
     pub disp_rot: i32,     // 0..3 = 0/90/180/270°
     pub disp_flip_h: bool,
     pub disp_flip_v: bool,
+    pub disp_bgr: bool,    // panel colour order BGR (vs RGB)
+    pub disp_inv: bool,    // invert colours
     pub boards: Vec<BoardDef>,
     pub board: i32,
 
@@ -249,6 +251,8 @@ impl Default for State {
             disp_rot: 3,
             disp_flip_h: true,
             disp_flip_v: false,
+            disp_bgr: true,
+            disp_inv: false,
             led_rev: 12,
             led_tc: 2,
             led_abs: 2,

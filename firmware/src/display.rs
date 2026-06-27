@@ -22,7 +22,7 @@ use esp_idf_svc::hal::spi::{
 use esp_idf_svc::hal::units::FromValueType;
 use mipidsi::interface::SpiInterface;
 use mipidsi::models::ST7796;
-use mipidsi::options::{ColorInversion, Orientation, Rotation};
+use mipidsi::options::{ColorInversion, ColorOrder, Orientation, Rotation};
 use mipidsi::Builder;
 
 use embedded_graphics::pixelcolor::Rgb565;
@@ -240,18 +240,23 @@ fn display_task() {
     let buf1: &'static mut [u8] = vec![0u8; 16384].leak();
     let buf2: &'static mut [u8] = vec![0u8; 16384].leak();
     let mut delay = Ets;
-    let (drot, dfh, dfv) = state::with(|s| (s.disp_rot, s.disp_flip_h, s.disp_flip_v));
+    let (drot, dfh, dfv, dbgr, dinv) =
+        state::with(|s| (s.disp_rot, s.disp_flip_h, s.disp_flip_v, s.disp_bgr, s.disp_inv));
     let orient = make_orientation(drot, dfh, dfv);
+    let color_order = if dbgr { ColorOrder::Bgr } else { ColorOrder::Rgb };
+    let inversion = if dinv { ColorInversion::Inverted } else { ColorInversion::Normal };
     let mut disp1 = Builder::new(ST7796, SpiInterface::new(dev1, dc.clone(), buf1))
         .display_size(320, 480)
         .orientation(orient)
-        .invert_colors(ColorInversion::Normal)
+        .color_order(color_order)
+        .invert_colors(inversion)
         .init(&mut delay)
         .expect("disp1");
     let mut disp2 = Builder::new(ST7796, SpiInterface::new(dev2, dc.clone(), buf2))
         .display_size(320, 480)
         .orientation(orient)
-        .invert_colors(ColorInversion::Normal)
+        .color_order(color_order)
+        .invert_colors(inversion)
         .init(&mut delay)
         .expect("disp2");
 
