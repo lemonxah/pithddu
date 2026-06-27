@@ -32,8 +32,9 @@ slint::slint! {
 fn render_screen_image(doc: &pith_ui::UiDoc) -> slint::Image {
     let s = &doc.screens[0];
     let mut fb = pith_ui::Framebuffer::new(s.w, s.h);
-    // resolve live-bound fields via demo telemetry (same engine the device runs)
-    pith_ui::render_screen_with(s, &pith_ui::demo_telem, &mut fb).expect("render");
+    // render against a demo telemetry frame (same engine + fonts the device runs)
+    let t = pith_ui::demo_telem();
+    pith_ui::render_screen(s, &t, 0, &mut fb);
     let mut buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(s.w, s.h);
     buf.make_mut_bytes().copy_from_slice(&fb.to_rgba8());
     slint::Image::from_rgba8(buf)

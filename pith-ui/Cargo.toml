@@ -14,9 +14,11 @@ std = ["serde/std", "postcard/use-std"]
 
 [dependencies]
 # Shared logic: telemetry field registry + byte-compat value formatting + the
-# serde-able Fmt/RuleOp enums the UiDoc binds to.
+# serde-able Fmt/RuleOp/Pal enums the UiDoc binds to + shift-light segment colours.
 pith-core = { path = "../pith-core", features = ["serde"] }
 embedded-graphics = "0.8"
+# Same variable-size fonts the firmware uses, so device + desktop render identically.
+u8g2-fonts = "0.5"
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 

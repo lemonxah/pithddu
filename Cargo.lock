@@ -3838,6 +3838,7 @@ dependencies = [
  "pith-core",
  "postcard",
  "serde",
+ "u8g2-fonts",
 ]
 
 [[package]]
@@ -5478,6 +5479,15 @@ checksum = "898160f1dfd383b4e92e17f0512a7d62f3c51c44937b23b6ffc3a1614a8eaccd"
 dependencies = [
  "bincode",
  "serde",
+]
+
+[[package]]
+name = "u8g2-fonts"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "132e15484caa39440cc9d6317c1f1980a13259234e630db2270ea2a2b1e5c4a2"
+dependencies = [
+ "embedded-graphics-core",
 ]
 
 [[package]]
