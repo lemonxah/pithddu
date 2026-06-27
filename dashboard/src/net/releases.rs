@@ -13,6 +13,22 @@ use crate::ui_bridge::firmware::{recompute_update_available, update_release_boar
 use crate::ui_bridge::{model, sstr};
 use crate::{Firmware, FwState};
 
+/// Choose the release image for the current board: prefer an exact board-id
+/// match, else any image built for the same chip family. The firmware is one
+/// binary per chip (board pins are set at runtime via @PINS), so the esp32s3
+/// image works on every esp32s3 board. Returns (download_url, exact_match).
+fn pick_bin(s: &crate::state::State, rel: &FwRelease) -> Option<(String, bool)> {
+    let board = s.cur_board_id();
+    if let Some(u) = rel.board_bin.get(&board) {
+        return Some((u.clone(), true));
+    }
+    let chip = s.cur_board().target.clone();
+    rel.board_bin.iter().find_map(|(bid, u)| {
+        let bin_chip = s.boards.iter().find(|b| &b.id == bid).map(|b| b.target.as_str());
+        (bin_chip == Some(chip.as_str())).then(|| (u.clone(), false))
+    })
+}
+
 pub fn fetch_firmware_releases(ctx: &Arc<Ctx>) {
     ctx.ui_run(|u| {
         let fw = u.global::<Firmware>();
@@ -106,21 +122,22 @@ pub fn flash_selected_release(ctx: &Arc<Ctx>) {
     let fw = ui.global::<Firmware>();
     let i = fw.get_sel_release();
     let connected = ctx.dash().connected();
-    let (tag, url, board, valid, has_board) = {
+    let (tag, url, board, valid, has_board, exact, chip) = {
         let s = ctx.lock();
         let valid = i >= 0 && (i as usize) < s.releases.len();
         if !valid {
-            (String::new(), String::new(), String::new(), false, false)
+            (String::new(), String::new(), String::new(), false, false, true, String::new())
         } else {
             let board = s.cur_board_id();
-            let url = s.releases[i as usize].board_bin.get(&board).cloned();
-            (
-                s.releases[i as usize].tag.clone(),
-                url.clone().unwrap_or_default(),
-                board,
-                true,
-                url.is_some(),
-            )
+            let chip = s.cur_board().target.clone();
+            match pick_bin(&s, &s.releases[i as usize]) {
+                Some((url, exact)) => {
+                    (s.releases[i as usize].tag.clone(), url, board, true, true, exact, chip)
+                }
+                None => {
+                    (s.releases[i as usize].tag.clone(), String::new(), board, true, false, true, chip)
+                }
+            }
         }
     };
     if !valid {
@@ -132,10 +149,19 @@ pub fn flash_selected_release(ctx: &Arc<Ctx>) {
         return;
     }
     if !has_board {
+        // No image for this chip family at all (e.g. the esp32s2 boards, which the
+        // Rust firmware doesn't target yet).
         fw.set_releases_status(sstr(&format!(
-            "{tag} has no build for {board} — build it yourself below"
+            "{tag} has no {chip} build yet — build from source below"
         )));
         return;
+    }
+    if !exact {
+        // A different board of the same chip; the image is universal (pins are set
+        // at runtime via @PINS), so flashing it is safe.
+        fw.set_status_line(sstr(&format!(
+            "No {board}-specific image; installing the compatible {chip} build."
+        )));
     }
     fw.set_releases_status(sstr(&format!("Downloading {tag} for {board}…")));
     fw.set_status_line(sstr(&format!("Downloading {tag} ({board}) from GitHub…")));

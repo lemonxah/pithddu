@@ -77,18 +77,14 @@ pub fn recompute_update_available(ui: &AppWindow, s: &State) {
     if upd && fw.get_state() == FwState::Success {
         fw.set_state(FwState::Idle);
     }
-    let board = s.cur_board_id();
-    fw.set_latest_has_board(!s.releases.is_empty() && s.releases[0].board_bin.contains_key(&board));
+    fw.set_latest_has_board(!s.releases.is_empty() && s.release_has_image(&s.releases[0]));
 }
 
 pub fn update_release_board_match(ui: &AppWindow, s: &State) {
     let fw = ui.global::<Firmware>();
-    let board = s.cur_board_id();
     let i = fw.get_sel_release();
     fw.set_release_has_board(
-        i >= 0
-            && (i as usize) < s.releases.len()
-            && s.releases[i as usize].board_bin.contains_key(&board),
+        i >= 0 && (i as usize) < s.releases.len() && s.release_has_image(&s.releases[i as usize]),
     );
-    fw.set_latest_has_board(!s.releases.is_empty() && s.releases[0].board_bin.contains_key(&board));
+    fw.set_latest_has_board(!s.releases.is_empty() && s.release_has_image(&s.releases[0]));
 }

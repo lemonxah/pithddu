@@ -126,8 +126,7 @@ pub struct BoardPin {
 pub struct BoardDef {
     pub name: String,
     pub id: String,
-    #[allow(dead_code)] // board metadata; the Rust firmware target is fixed (esp32s3)
-    pub target: String,
+    pub target: String, // esp chip family (esp32s3 / esp32s2) — picks a compatible image
     pub pins: Vec<BoardPin>,
 }
 
@@ -291,5 +290,23 @@ impl State {
         } else {
             self.cur_board().id.clone()
         }
+    }
+
+    /// Does `rel` ship an image the current board can run? True on an exact
+    /// board-id match, or any image built for the same chip family (one binary
+    /// per chip; board pins are configured at runtime via @PINS).
+    pub fn release_has_image(&self, rel: &FwRelease) -> bool {
+        let board = self.cur_board_id();
+        if rel.board_bin.contains_key(&board) {
+            return true;
+        }
+        let chip = self.cur_board().target.as_str();
+        rel.board_bin.keys().any(|bid| {
+            self.boards
+                .iter()
+                .find(|b| &b.id == bid)
+                .map(|b| b.target.as_str())
+                == Some(chip)
+        })
     }
 }
