@@ -29,6 +29,13 @@ pub struct ModSpec {
     pub size_pct: i32,
     pub rules: Vec<ColorRule>,
     pub enabled: bool,
+    // Freeform placement (device pixels) + which display (0/1) the node lives on.
+    // Zone-authored modules leave these at 0; the freeform editor sets them.
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub display: u8,
 }
 
 impl Default for ModSpec {
@@ -46,6 +53,11 @@ impl Default for ModSpec {
             size_pct: 0,
             rules: Vec::new(),
             enabled: true,
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+            display: 0,
         }
     }
 }
@@ -62,6 +74,7 @@ pub struct Preset {
     pub name: String,
     pub builtin: bool,
     pub zones: Vec<Zone>,
+    pub nodes: Vec<ModSpec>, // freeform layout snapshot (per-display via ModSpec.display)
 }
 
 #[derive(Clone)]
@@ -133,6 +146,9 @@ pub struct State {
     pub leds: [[LedDef; 12]; 7],
 
     pub zones: Vec<Zone>,
+    pub nodes: Vec<ModSpec>, // freeform race-screen layout (the pith-ui authoring model)
+    pub edit_display: u8,    // which display the freeform editor is showing (0/1)
+    pub drag_origin: Option<(String, i32, i32, i32, i32)>, // (id,x,y,w,h) at gesture start
     pub presets: Vec<Preset>,
     pub active_preset: i32,
     pub race_dirty: bool,
@@ -190,6 +206,9 @@ impl Default for State {
             car_id: String::new(),
             leds: [[LedDef::default(); 12]; 7],
             zones: Vec::new(),
+            nodes: Vec::new(),
+            edit_display: 0,
+            drag_origin: None,
             presets: Vec::new(),
             active_preset: 0,
             race_dirty: false,

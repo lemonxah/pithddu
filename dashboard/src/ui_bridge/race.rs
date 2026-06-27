@@ -10,8 +10,8 @@ use crate::telemetry::{
     PALETTE_TOKENS,
 };
 use crate::{
-    AppWindow, LayoutZone, ModuleDef, PresetCard, RaceLayout, ResolvedModule, ResolvedZone,
-    RuleRow, ZoneModule,
+    AppWindow, LayoutZone, ModuleDef, NodeBox, PresetCard, RaceLayout, ResolvedModule,
+    ResolvedZone, RuleRow, ZoneModule,
 };
 
 pub fn mod_display(m: &ModSpec) -> String {
@@ -78,6 +78,10 @@ pub fn to_zone_module(m: &ModSpec) -> ZoneModule {
         base: sstr(&m.base),
         rule_summary: sstr(&rule_summary(m)),
         size: m.size_pct,
+        x: m.x,
+        y: m.y,
+        w: m.w,
+        h: m.h,
         kind_idx: idx_of(&KIND_OPTIONS, &m.kind),
         field_idx: if fid > 0 { fid as i32 - 1 } else { -1 },
         fmt_idx: if m.fmt_type.is_empty() {
@@ -103,6 +107,32 @@ pub fn push_zones(ui: &AppWindow, s: &State) {
         })
         .collect();
     ui.global::<RaceLayout>().set_zones(model(zs));
+}
+
+/// Push the freeform node overlays for the display being edited, plus the
+/// display selector state. The pith-ui image carries the pixels; these boxes are
+/// just the interactive selection/drag handles.
+pub fn push_nodes(ui: &AppWindow, s: &State) {
+    let rl = ui.global::<RaceLayout>();
+    let sel = rl.get_sel_id().to_string();
+    let boxes: Vec<NodeBox> = s
+        .nodes
+        .iter()
+        .filter(|m| m.display == s.edit_display)
+        .map(|m| NodeBox {
+            id: sstr(&m.id),
+            x: m.x,
+            y: m.y,
+            w: m.w,
+            h: m.h,
+            kind: sstr(&m.kind),
+            label: sstr(&mod_display(m)),
+            selected: m.id == sel,
+        })
+        .collect();
+    rl.set_nodes(model(boxes));
+    rl.set_edit_display(s.edit_display as i32);
+    rl.set_display_count(2); // the DDU drives two ST7796 panels
 }
 
 pub fn push_presets(ui: &AppWindow, s: &State) {
@@ -214,19 +244,11 @@ pub fn push_resolved(ui: &AppWindow, s: &State) {
     ui.global::<RaceLayout>().set_render_zones(model(rzs));
 }
 
-pub fn selected_module_idx(ui: &AppWindow, s: &State) -> Option<(usize, usize)> {
-    let rl = ui.global::<RaceLayout>();
-    let zk = rl.get_sel_zone().to_string();
-    let id = rl.get_sel_id().to_string();
-    let zi = s.zones.iter().position(|z| z.key == zk)?;
-    let mi = s.zones[zi].modules.iter().position(|m| m.id == id)?;
-    Some((zi, mi))
-}
-
 pub fn push_edit_module(ui: &AppWindow, s: &State) {
     let rl = ui.global::<RaceLayout>();
-    let m = match selected_module_idx(ui, s) {
-        Some((zi, mi)) => &s.zones[zi].modules[mi],
+    let id = rl.get_sel_id().to_string();
+    let m = match s.nodes.iter().find(|m| m.id == id) {
+        Some(m) => m,
         None => {
             rl.set_sel_id(sstr(""));
             return;

@@ -130,6 +130,7 @@ pub fn init(ui: &AppWindow, rt: &tokio::runtime::Runtime) -> Arc<Ctx> {
         Some((presets, _)) => {
             s.presets = presets;
             s.zones = s.presets[0].zones.clone();
+            s.nodes = s.presets[0].nodes.clone();
             s.active_preset = 0;
             s.uid = 1_000_000;
         }
@@ -139,8 +140,9 @@ pub fn init(ui: &AppWindow, rt: &tokio::runtime::Runtime) -> Arc<Ctx> {
     if let Some(pages) = load_buttons() {
         s.btn_pages = pages;
     }
-    if let Some((zones, active)) = load_race_layout() {
+    if let Some((zones, nodes, active)) = load_race_layout() {
         s.zones = zones;
+        s.nodes = nodes;
         if active >= 0 && (active as usize) < s.presets.len() {
             s.active_preset = active;
         }

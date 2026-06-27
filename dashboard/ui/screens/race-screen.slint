@@ -2,134 +2,9 @@
 // Presets apply zone configs; modules drag-reorder by their left handle, toggle,
 // add from a per-zone palette, and the live 320×240 mirror reflects every change.
 import { Theme } from "../theme.slint";
-import { RaceLayout, Telemetry, PresetCard, LayoutZone, ZoneModule, ModuleDef, RuleRow, DeviceCaps } from "../models.slint";
-import { Card, PrimaryButton, GhostButton, ToggleSwitch, SectionLabel, Dot } from "../widgets.slint";
+import { RaceLayout, Telemetry, PresetCard, ZoneModule, ModuleDef, RuleRow, DeviceCaps, NodeBox } from "../models.slint";
+import { Card, PrimaryButton, GhostButton, Dot } from "../widgets.slint";
 import { ComboBox, LineEdit, Button, Slider } from "std-widgets.slint";
-
-// One draggable module row inside a zone.
-component ModuleRow inherits Rectangle {
-    in property <string> zone-key;
-    in property <int> index;
-    in property <ZoneModule> mod;
-    property <length> rh: 38px;
-    height: rh;
-    property <bool> selected: RaceLayout.sel-id == root.mod.id;
-    background: drag.pressed ? Theme.elev : (root.selected ? Theme.elev : Theme.panel2);
-    border-radius: 7px;
-    border-width: (drag.pressed || root.selected) ? 1px : 0px;
-    border-color: Theme.accent;
-    HorizontalLayout {
-        padding-left: 6px;
-        padding-right: 10px;
-        spacing: 8px;
-        // drag handle (left)
-        drag := TouchArea {
-            width: 22px;
-            property <length> anchor;
-            pointer-event(e) => {
-                if (e.kind == PointerEventKind.down) { self.anchor = self.mouse-y; RaceLayout.dragging = true; }
-                if (e.kind == PointerEventKind.up) { RaceLayout.dragging = false; }
-            }
-            moved => {
-                if (self.mouse-y - self.anchor > root.rh) {
-                    RaceLayout.move-module(root.zone-key, root.index, root.index + 1);
-                    self.anchor += root.rh;
-                }
-                if (self.mouse-y - self.anchor < -root.rh) {
-                    RaceLayout.move-module(root.zone-key, root.index, root.index - 1);
-                    self.anchor -= root.rh;
-                }
-            }
-            Text { text: "⠿"; color: Theme.text3; font-size: 15px; horizontal-alignment: center; vertical-alignment: center; }
-        }
-        // name (left aligned) — click to select for editing
-        Rectangle {
-            horizontal-stretch: 1;
-            HorizontalLayout {
-                Text {
-                    text: root.mod.name;
-                    color: root.mod.enabled ? Theme.text : Theme.text3;
-                    font-size: 13px;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                    overflow: elide;
-                }
-            }
-            TouchArea { clicked => { RaceLayout.select-module(root.zone-key, root.mod.id); } }
-        }
-        // remove
-        TouchArea {
-            width: 18px;
-            Text { text: "✕"; color: rm.has-hover ? Theme.red : Theme.text3; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
-            rm := TouchArea { clicked => { RaceLayout.remove-module(root.zone-key, root.mod.id); } }
-        }
-        // toggle (right aligned, fixed width so all toggles line up)
-        VerticalLayout {
-            alignment: center;
-            width: 34px;
-            ToggleSwitch { on: root.mod.enabled; toggled(v) => { RaceLayout.toggle-module(root.zone-key, root.mod.id, v); } }
-        }
-    }
-}
-
-// A zone card with header (+ add) and its module rows.
-component ZoneCard inherits Card {
-    in property <LayoutZone> zone;
-    in property <bool> flip-up: false;     // open the add-popup upward (bottom zones)
-    VerticalLayout {
-        padding: 12px;
-        spacing: 8px;
-        HorizontalLayout {
-            Text { text: root.zone.title; color: Theme.text2; font-family: Theme.display-font; font-size: 12px; font-weight: 600; letter-spacing: 1px; vertical-alignment: center; }
-            Rectangle { }
-            // add-module
-            add-btn := Rectangle {
-                width: 22px;
-                height: 18px;
-                border-radius: 5px;
-                background: addta.has-hover ? Theme.elev : Theme.panel2;
-                Text { text: "+"; color: Theme.accent; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
-                addta := TouchArea { clicked => { pop.show(); } }
-                pop := PopupWindow {
-                    x: add-btn.width - 210px;
-                    y: root.flip-up ? -252px : add-btn.height + 4px;
-                    width: 210px;
-                    height: 248px;
-                    Rectangle {
-                        background: Theme.elev;
-                        border-radius: 8px;
-                        border-width: 1px;
-                        border-color: Theme.line2;
-                        Flickable {
-                            viewport-height: cat-col.preferred-height;
-                            cat-col := VerticalLayout {
-                                padding: 6px;
-                                for md in RaceLayout.catalog: Rectangle {
-                                    height: 26px;
-                                    border-radius: 5px;
-                                    background: optta.has-hover ? Theme.panel : transparent;
-                                    HorizontalLayout {
-                                        padding-left: 10px;
-                                        padding-right: 10px;
-                                        alignment: start;
-                                        Text { text: md.name; color: Theme.text2; font-size: 12px; vertical-alignment: center; }
-                                    }
-                                    optta := TouchArea { clicked => { RaceLayout.add-module(root.zone.key, md.type); } }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        for m[i] in root.zone.modules: ModuleRow {
-            zone-key: root.zone.key;
-            index: i;
-            mod: m;
-        }
-        if root.zone.modules.length == 0: Text { text: "empty — add a module"; color: Theme.text3; font-size: 12px; }
-    }
-}
 
 // Edit panel for the selected module: field binding, label, format, color rules.
 component EditPanel inherits Card {
@@ -171,6 +46,19 @@ component EditPanel inherits Card {
             Text { text: "TEXT SIZE %  (0 = auto-fit to box)"; color: Theme.text3; font-size: 10px; }
             LineEdit { text: "\{RaceLayout.edit.size}"; input-type: number; edited(t) => { RaceLayout.set-mod-size(t.to-float()); } }
         }
+        // precise placement (device px) — mirrors drag/resize on the canvas
+        Text { text: "POSITION & SIZE (px)"; color: Theme.text3; font-size: 10px; letter-spacing: 0.5px; }
+        HorizontalLayout {
+            spacing: 6px;
+            VerticalLayout { spacing: 2px; horizontal-stretch: 1; Text { text: "X"; color: Theme.text3; font-size: 9px; }
+                LineEdit { text: "\{RaceLayout.edit.x}"; input-type: number; edited(t) => { RaceLayout.set-node-geo(t.to-float(), RaceLayout.edit.y, RaceLayout.edit.w, RaceLayout.edit.h); } } }
+            VerticalLayout { spacing: 2px; horizontal-stretch: 1; Text { text: "Y"; color: Theme.text3; font-size: 9px; }
+                LineEdit { text: "\{RaceLayout.edit.y}"; input-type: number; edited(t) => { RaceLayout.set-node-geo(RaceLayout.edit.x, t.to-float(), RaceLayout.edit.w, RaceLayout.edit.h); } } }
+            VerticalLayout { spacing: 2px; horizontal-stretch: 1; Text { text: "W"; color: Theme.text3; font-size: 9px; }
+                LineEdit { text: "\{RaceLayout.edit.w}"; input-type: number; edited(t) => { RaceLayout.set-node-geo(RaceLayout.edit.x, RaceLayout.edit.y, t.to-float(), RaceLayout.edit.h); } } }
+            VerticalLayout { spacing: 2px; horizontal-stretch: 1; Text { text: "H"; color: Theme.text3; font-size: 9px; }
+                LineEdit { text: "\{RaceLayout.edit.h}"; input-type: number; edited(t) => { RaceLayout.set-node-geo(RaceLayout.edit.x, RaceLayout.edit.y, RaceLayout.edit.w, t.to-float()); } } }
+        }
         HorizontalLayout {
             Text { text: "COLOR RULES"; color: Theme.text3; font-size: 10px; letter-spacing: 0.5px; vertical-alignment: center; }
             Rectangle { }
@@ -182,6 +70,93 @@ component EditPanel inherits Card {
             LineEdit { width: 62px; text: "\{r.v}"; input-type: number; edited(t) => { RaceLayout.set-rule(i, r.op, t, r.color); } }
             ComboBox { horizontal-stretch: 1; model: RaceLayout.palette-options; current-index: r.color-idx; selected(v) => { RaceLayout.set-rule(i, r.op, "\{r.v}", v); } }
             Button { text: "✕"; clicked => { RaceLayout.remove-rule(i); } }
+        }
+        Rectangle { height: 2px; }
+        Button { text: "🗑  Remove widget"; clicked => { RaceLayout.node-remove(RaceLayout.sel-id); } }
+    }
+}
+
+// A freeform node's interactive overlay, drawn on top of the pith-ui image. The
+// pixels come from the image; this box only handles select / drag / resize.
+component NodeOverlay inherits Rectangle {
+    in property <NodeBox> node;
+    in property <float> scale;   // device px -> screen px
+    in property <length> ox;     // image origin within the canvas
+    in property <length> oy;
+    // local gesture offsets (screen px) so the box follows the cursor live without
+    // a model rebuild (which would recreate this element and abort the gesture)
+    property <length> ddx: 0;
+    property <length> ddy: 0;
+    property <length> dw: 0;
+    property <length> dh: 0;
+
+    x: root.ox + node.x * root.scale * 1px + root.ddx;
+    y: root.oy + node.y * root.scale * 1px + root.ddy;
+    width: node.w * root.scale * 1px + root.dw;
+    height: node.h * root.scale * 1px + root.dh;
+    border-width: node.selected ? 2px : 1px;
+    border-color: node.selected ? Theme.accent : #ffffff55;
+    border-radius: 2px;
+    background: node.selected ? #4da3ff1a : #ffffff08;
+
+    // whole-box move
+    move-ta := TouchArea {
+        mouse-cursor: move;
+        property <length> ax;
+        property <length> ay;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                RaceLayout.node-select(node.id);
+                RaceLayout.node-drag-start(node.id);
+                self.ax = self.mouse-x;
+                self.ay = self.mouse-y;
+                root.ddx = 0; root.ddy = 0;
+                RaceLayout.dragging = true;
+            }
+            if (e.kind == PointerEventKind.up) {
+                RaceLayout.node-drag-end();
+                root.ddx = 0; root.ddy = 0;
+                RaceLayout.dragging = false;
+            }
+        }
+        moved => {
+            root.ddx = self.mouse-x - self.ax;
+            root.ddy = self.mouse-y - self.ay;
+            RaceLayout.node-move(Math.round(root.ddx / 1px / root.scale), Math.round(root.ddy / 1px / root.scale));
+        }
+    }
+    // resize handle (bottom-right corner)
+    Rectangle {
+        width: 13px;
+        height: 13px;
+        x: parent.width - self.width - 1px;
+        y: parent.height - self.height - 1px;
+        background: node.selected ? Theme.accent : #ffffff77;
+        border-radius: 2px;
+        rz := TouchArea {
+            mouse-cursor: nwse-resize;
+            property <length> ax;
+            property <length> ay;
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down) {
+                    RaceLayout.node-select(node.id);
+                    RaceLayout.node-drag-start(node.id);
+                    self.ax = self.mouse-x;
+                    self.ay = self.mouse-y;
+                    root.dw = 0; root.dh = 0;
+                    RaceLayout.dragging = true;
+                }
+                if (e.kind == PointerEventKind.up) {
+                    RaceLayout.node-drag-end();
+                    root.dw = 0; root.dh = 0;
+                    RaceLayout.dragging = false;
+                }
+            }
+            moved => {
+                root.dw = self.mouse-x - self.ax;
+                root.dh = self.mouse-y - self.ay;
+                RaceLayout.node-resize(Math.round(root.dw / 1px / root.scale), Math.round(root.dh / 1px / root.scale));
+            }
         }
     }
 }
@@ -197,7 +172,7 @@ export component RaceScreen inherits Rectangle {
                 alignment: center;
                 spacing: 3px;
                 Text { text: "Race Screen Layout"; color: Theme.text; font-family: Theme.display-font; font-size: 24px; font-weight: 700; }
-                Text { text: "Editing Main display · " + RaceLayout.main-res + " · live mirror"; color: Theme.text3; font-size: 13px; }
+                Text { text: "Freeform pith-ui editor · Display " + (RaceLayout.edit-display + 1) + " · pixel-exact mirror"; color: Theme.text3; font-size: 13px; }
             }
             Rectangle { }
             HorizontalLayout {
@@ -313,32 +288,92 @@ export component RaceScreen inherits Rectangle {
                                     source: RaceLayout.preview-image;
                                     image-rendering: pixelated;
                                 }
+                                // interactive freeform overlays (select / drag / resize)
+                                for n in RaceLayout.nodes: NodeOverlay {
+                                    node: n;
+                                    scale: stage.fit;
+                                    ox: 6px;
+                                    oy: 6px;
+                                }
                             }
                         }
                     }
-                    Text { text: "Edits on the right apply to the mirror instantly · drag ⠿ to reorder · zoom to inspect."; color: Theme.text3; font-size: 12px; horizontal-alignment: center; }
+                    Text { text: "Drag a widget to move · drag the corner to resize · click to select · add widgets on the right."; color: Theme.text3; font-size: 12px; horizontal-alignment: center; }
                 }
             }
-            // layout zones panel
+            // freeform editor panel
             VerticalLayout {
                 width: 360px;
                 spacing: 12px;
-                HorizontalLayout {
-                    VerticalLayout { alignment: center; SectionLabel { text: "LAYOUT ZONES"; } }
-                    Rectangle { }
-                    VerticalLayout { alignment: center; Text { text: "drag ⠿ · toggle · + add"; color: Theme.text3; font-size: 11px; } }
-                }
-                Flickable {
-                    vertical-stretch: 1;
-                    viewport-height: zone-col.preferred-height;
-                    interactive: !RaceLayout.dragging;   // don't scroll while reordering a module
-                    zone-col := VerticalLayout {
-                        spacing: 12px;
-                        alignment: start;          // keep zones pinned to the top on resize
-                        for z[i] in RaceLayout.zones: ZoneCard { zone: z; flip-up: i >= 3; }
+                // display selector (the DDU drives two panels)
+                if RaceLayout.display-count > 1: HorizontalLayout {
+                    spacing: 8px;
+                    for d in [0, 1]: Rectangle {
+                        height: 30px;
+                        horizontal-stretch: 1;
+                        background: RaceLayout.edit-display == d ? Theme.accent-dim : Theme.panel;
+                        border-radius: 7px;
+                        border-width: 1px;
+                        border-color: RaceLayout.edit-display == d ? Theme.accent : Theme.line;
+                        Text {
+                            text: "Display " + (d + 1);
+                            color: RaceLayout.edit-display == d ? Theme.accent : Theme.text2;
+                            font-family: Theme.display-font;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        TouchArea { clicked => { RaceLayout.switch-display(d); } }
                     }
                 }
-                if RaceLayout.sel-id != "": EditPanel { }
+                // add-widget palette
+                Card {
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+                        HorizontalLayout {
+                            Text { text: "ADD WIDGET"; color: Theme.text2; font-family: Theme.display-font; font-size: 12px; font-weight: 600; letter-spacing: 1px; vertical-alignment: center; }
+                            Rectangle { }
+                            Text { text: RaceLayout.nodes.length + " on this display"; color: Theme.text3; font-size: 11px; vertical-alignment: center; }
+                        }
+                        Flickable {
+                            height: 116px;
+                            viewport-height: cat-flow.preferred-height;
+                            cat-flow := VerticalLayout {
+                                spacing: 5px;
+                                for md in RaceLayout.catalog: Rectangle {
+                                    height: 25px;
+                                    border-radius: 5px;
+                                    background: addta.has-hover ? Theme.elev : Theme.panel2;
+                                    HorizontalLayout {
+                                        padding-left: 10px;
+                                        padding-right: 10px;
+                                        Text { text: md.name; color: Theme.text2; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
+                                        Text { text: "+"; color: Theme.accent; font-size: 15px; vertical-alignment: center; }
+                                    }
+                                    addta := TouchArea { clicked => { RaceLayout.node-add(md.type); } }
+                                }
+                            }
+                        }
+                    }
+                }
+                // selected-widget editor (or a hint)
+                if RaceLayout.sel-id != "": Flickable {
+                    vertical-stretch: 1;
+                    viewport-height: edit-col.preferred-height;
+                    edit-col := VerticalLayout { EditPanel { } }
+                }
+                if RaceLayout.sel-id == "": Rectangle {
+                    vertical-stretch: 1;
+                    Text {
+                        text: "Select a widget on the canvas to edit it,\nor add one above.";
+                        color: Theme.text3;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
             }
         }
     }

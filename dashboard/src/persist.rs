@@ -148,6 +148,8 @@ pub fn race_layout_from_json(s: &mut State, j: &Value) {
         zones[z as usize].modules.push(m);
     }
     s.zones = zones;
+    // @RG returns the legacy zone layout; seed the freeform editor from it.
+    s.nodes = crate::catalog::zones_to_nodes(&s.zones);
 }
 
 fn mod_to_json(m: &ModSpec) -> Value {
@@ -160,6 +162,7 @@ fn mod_to_json(m: &ModSpec) -> Value {
         "id": m.id, "templ": m.templ, "kind": m.kind, "field": m.field,
         "label": m.label, "fmt": m.fmt_type, "unit": m.unit, "scale": m.scale,
         "base": m.base, "sz": m.size_pct, "enabled": m.enabled, "rules": rules,
+        "x": m.x, "y": m.y, "w": m.w, "h": m.h, "disp": m.display,
     })
 }
 fn mod_from_json(j: &Value) -> ModSpec {
@@ -176,6 +179,11 @@ fn mod_from_json(j: &Value) -> ModSpec {
         size_pct: jint(j, "sz", 0) as i32,
         enabled: jbool(j, "enabled", true),
         rules: Vec::new(),
+        x: jint(j, "x", 0) as i32,
+        y: jint(j, "y", 0) as i32,
+        w: jint(j, "w", 0) as i32,
+        h: jint(j, "h", 0) as i32,
+        display: jint(j, "disp", 0) as u8,
     };
     if let Some(rules) = j.get("rules").and_then(|r| r.as_array()) {
         for r in rules {
@@ -228,6 +236,7 @@ pub fn load_presets(s: &State) -> Option<(Vec<Preset>, i32)> {
             name: jstr(jp, "name", "?"),
             builtin: jbool(jp, "builtin", false),
             zones: Vec::new(),
+            nodes: Vec::new(),
         };
         if let Some(zones) = jp.get("zones").and_then(|z| z.as_array()) {
             for jz in zones {
@@ -244,6 +253,11 @@ pub fn load_presets(s: &State) -> Option<(Vec<Preset>, i32)> {
                 p.zones.push(z);
             }
         }
+        // Prefer a stored freeform snapshot; otherwise derive from the zone layout.
+        p.nodes = match jp.get("nodes").and_then(|n| n.as_array()) {
+            Some(nodes) => nodes.iter().map(mod_from_json).collect(),
+            None => crate::catalog::zones_to_nodes(&p.zones),
+        };
         presets.push(p);
     }
     if presets.is_empty() {
@@ -254,14 +268,19 @@ pub fn load_presets(s: &State) -> Option<(Vec<Preset>, i32)> {
 }
 
 pub fn save_race_layout(s: &State) {
-    let j = json!({"active": s.active_preset, "zones": zones_to_json(&s.zones)});
+    let nodes: Vec<Value> = s.nodes.iter().map(mod_to_json).collect();
+    let j = json!({
+        "active": s.active_preset,
+        "zones": zones_to_json(&s.zones),
+        "nodes": nodes,
+    });
     let _ = std::fs::write(
         race_layout_path(),
         serde_json::to_string_pretty(&j).unwrap_or_default(),
     );
 }
 
-pub fn load_race_layout() -> Option<(Vec<Zone>, i32)> {
+pub fn load_race_layout() -> Option<(Vec<Zone>, Vec<ModSpec>, i32)> {
     let body = read_file(&race_layout_path());
     if body.is_empty() {
         return None;
@@ -288,7 +307,12 @@ pub fn load_race_layout() -> Option<(Vec<Zone>, i32)> {
     if zones.is_empty() {
         return None;
     }
-    Some((zones, jint(&j, "active", 0) as i32))
+    // Freeform nodes: stored snapshot if present, else derived from the zones.
+    let nodes = match j.get("nodes").and_then(|n| n.as_array()) {
+        Some(arr) if !arr.is_empty() => arr.iter().map(mod_from_json).collect(),
+        _ => crate::catalog::zones_to_nodes(&zones),
+    };
+    Some((zones, nodes, jint(&j, "active", 0) as i32))
 }
 
 pub fn build_buttons_json(s: &State) -> String {

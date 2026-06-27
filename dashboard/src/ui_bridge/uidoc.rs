@@ -15,17 +15,9 @@ use pith_core::registry::telemetry_from_fields;
 use pith_core::simhub::Telemetry;
 use pith_ui::{Kind, Node, Rect, Rule, Screen, UiDoc};
 
-// The race panel is 480×320 (320×480 physical, rotated 90°). These zones mirror
-// the firmware's ZONES table so existing layouts map to the same on-screen rects.
-const SCREEN_W: u32 = 480;
-const SCREEN_H: u32 = 320;
-const ZONES: [(&str, i32, i32, i32, i32, bool); 5] = [
-    ("topStrip", 0, 2, 480, 42, true),
-    ("leftRail", 4, 50, 128, 220, false),
-    ("center", 136, 50, 208, 220, false),
-    ("rightRail", 348, 50, 128, 220, false),
-    ("bottom", 0, 276, 480, 42, true),
-];
+// The race panels are 480×320 (320×480 physical, rotated 90°).
+pub const SCREEN_W: u32 = 480;
+pub const SCREEN_H: u32 = 320;
 
 fn rules_of(m: &ModSpec) -> Vec<Rule> {
     m.rules
@@ -85,39 +77,22 @@ fn kind_of(m: &ModSpec) -> Kind {
     }
 }
 
-/// Lay the active zone layout out into a freeform pith-ui `Screen` for `display`,
-/// matching the firmware's per-zone auto-layout (so this is WYSIWYG with the
-/// current device render).
-fn build_screen(s: &State, display: u8) -> Screen {
-    let mut nodes: Vec<Node> = Vec::new();
-    for &(key, zx, zy, zw, zh, horiz) in ZONES.iter() {
-        let zone = match s.zones.iter().find(|z| z.key == key) {
-            Some(z) => z,
-            None => continue,
-        };
-        let mods: Vec<&ModSpec> = zone.modules.iter().filter(|m| m.enabled).collect();
-        let n = mods.len() as i32;
-        if n == 0 {
-            continue;
-        }
-        for (i, m) in mods.iter().enumerate() {
-            let i = i as i32;
-            let (x, y, w, h) = if horiz {
-                (zx + zw * i / n, zy, zw / n, zh)
-            } else {
-                (zx, zy + zh * i / n, zw, zh / n)
-            };
-            nodes.push(Node {
-                rect: Rect {
-                    x,
-                    y,
-                    w: w.max(0) as u32,
-                    h: h.max(0) as u32,
-                },
-                kind: kind_of(m),
-            });
-        }
-    }
+/// Build a pith-ui `Screen` from the freeform nodes assigned to `display`.
+pub fn build_screen(s: &State, display: u8) -> Screen {
+    let nodes: Vec<Node> = s
+        .nodes
+        .iter()
+        .filter(|m| m.display == display && m.enabled)
+        .map(|m| Node {
+            rect: Rect {
+                x: m.x,
+                y: m.y,
+                w: m.w.max(0) as u32,
+                h: m.h.max(0) as u32,
+            },
+            kind: kind_of(m),
+        })
+        .collect();
     Screen {
         display,
         w: SCREEN_W,
@@ -127,12 +102,16 @@ fn build_screen(s: &State, display: u8) -> Screen {
     }
 }
 
-/// Build the full UiDoc for the device (currently a single race screen on
-/// display 0; the side display is added when the editor gains a second screen).
+/// Build the full UiDoc: always a display-0 screen, plus display 1 when it has
+/// nodes (so the device renders both panels via pith-ui).
 pub fn build_uidoc(s: &State) -> UiDoc {
+    let mut screens = vec![build_screen(s, 0)];
+    if s.nodes.iter().any(|m| m.display == 1) {
+        screens.push(build_screen(s, 1));
+    }
     UiDoc {
         version: 1,
-        screens: vec![build_screen(s, 0)],
+        screens,
     }
 }
 
@@ -149,24 +128,44 @@ fn current_telemetry(s: &State) -> Telemetry {
     t
 }
 
-/// Render `doc`'s display-0 screen against live telemetry into a slint image,
-/// using the device's own pith-ui renderer + fonts (pixel-identical mirror).
-fn render_image(doc: &UiDoc, t: &Telemetry) -> Option<slint::Image> {
-    let screen = doc.screens.iter().find(|s| s.display == 0)?;
+/// Render `screen` against live telemetry into a slint image, using the device's
+/// own pith-ui renderer + fonts (pixel-identical mirror).
+fn render_image(screen: &Screen, t: &Telemetry) -> slint::Image {
     let mut fb = pith_ui::Framebuffer::new(screen.w, screen.h);
     pith_ui::render_screen(screen, t, 0, &mut fb);
     let mut buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(screen.w, screen.h);
     buf.make_mut_bytes().copy_from_slice(&fb.to_rgba8());
-    Some(slint::Image::from_rgba8(buf))
+    slint::Image::from_rgba8(buf)
 }
 
-/// Build the UiDoc from the current layout, render it with live telemetry, and
-/// push the resulting image into the RaceLayout preview. Called on every layout
-/// edit and telemetry tick so the mirror stays live + exact.
+/// Render the display currently being edited with live telemetry, and push the
+/// resulting image into the RaceLayout preview. Called on every layout edit and
+/// telemetry tick so the mirror stays live + exact.
 pub fn push_preview(ui: &AppWindow, s: &State) {
-    let doc = build_uidoc(s);
+    let screen = build_screen(s, s.edit_display);
     let t = current_telemetry(s);
-    if let Some(img) = render_image(&doc, &t) {
-        ui.global::<RaceLayout>().set_preview_image(img);
+    let img = render_image(&screen, &t);
+    ui.global::<RaceLayout>().set_preview_image(img);
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::state::{ModSpec, State};
+
+    // The firmware decodes @UI with serde_json::from_str::<UiDoc>; prove the
+    // dashboard's serde_json::to_string output round-trips to the same type.
+    #[test]
+    fn uidoc_json_roundtrips_for_firmware() {
+        let mut s = State::default();
+        s.nodes = vec![
+            ModSpec { id: "a".into(), kind: "gearSpeed".into(), x: 170, y: 120, w: 140, h: 80, display: 0, ..Default::default() },
+            ModSpec { id: "b".into(), kind: "stat".into(), field: "fuel_dl".into(), label: "FUEL".into(), x: 10, y: 10, w: 100, h: 50, display: 1, ..Default::default() },
+        ];
+        let json = super::build_uidoc_json(&s);
+        let doc: pith_ui::UiDoc = serde_json::from_str(&json).expect("firmware-side decode");
+        assert_eq!(doc.screens.len(), 2); // display 0 + display 1
+        assert_eq!(doc.screens[0].display, 0);
+        assert_eq!(doc.screens[1].display, 1);
+        assert_eq!(doc.screens[0].nodes.len(), 1);
     }
 }

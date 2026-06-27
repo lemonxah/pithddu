@@ -36,6 +36,7 @@ pub fn model<T: Clone + 'static>(v: Vec<T>) -> ModelRc<T> {
 
 pub fn refresh_race(ui: &crate::AppWindow, s: &crate::state::State) {
     race::push_zones(ui, s);
+    race::push_nodes(ui, s);
     race::push_presets(ui, s);
     race::push_resolved(ui, s);
     race::push_edit_module(ui, s);

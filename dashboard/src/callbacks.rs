@@ -12,7 +12,7 @@ use crate::ui_bridge::buttons::push_buttons_model;
 use crate::ui_bridge::cars::{push_car_results, push_classes, rebuild_filtered};
 use crate::ui_bridge::device::push_pins;
 use crate::ui_bridge::firmware::{refresh_serial_ports, update_release_board_match};
-use crate::ui_bridge::race::{push_edit_module, push_presets, selected_module_idx};
+use crate::ui_bridge::race::{push_edit_module, push_presets};
 use crate::ui_bridge::shift::{pull_shift_scalars, push_led_model};
 use crate::ui_bridge::simhub::{push_sim_fields, regen_simhub};
 use crate::ui_bridge::{refresh_race, sstr, to_u32};
@@ -27,8 +27,10 @@ fn mark_dirty(u: &AppWindow, s: &State) {
 }
 
 fn with_selected<F: FnOnce(&mut ModSpec)>(u: &AppWindow, s: &mut State, f: F) -> bool {
-    if let Some((zi, mi)) = selected_module_idx(u, s) {
-        f(&mut s.zones[zi].modules[mi]);
+    // The freeform editor selects nodes by id across all displays.
+    let id = u.global::<RaceLayout>().get_sel_id().to_string();
+    if let Some(m) = s.nodes.iter_mut().find(|m| m.id == id) {
+        f(m);
         true
     } else {
         false
@@ -134,6 +136,7 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
                     return;
                 }
                 st.zones = st.presets[i as usize].zones.clone();
+                st.nodes = st.presets[i as usize].nodes.clone();
                 st.active_preset = i;
                 st.race_dirty = false;
                 let rl = u.global::<RaceLayout>();
@@ -151,6 +154,7 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
                     name: name.to_string(),
                     builtin: false,
                     zones: st.zones.clone(),
+                    nodes: st.nodes.clone(),
                 };
                 st.presets.push(p);
                 st.active_preset = st.presets.len() as i32 - 1;
@@ -169,6 +173,7 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
                     return;
                 }
                 st.presets[a as usize].zones = st.zones.clone();
+                st.presets[a as usize].nodes = st.nodes.clone();
                 st.race_dirty = false;
                 let rl = u.global::<RaceLayout>();
                 rl.set_dirty(false);
@@ -373,6 +378,117 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
         });
         let c = ctx.clone();
         rl.on_read_device(move || crate::loops::read_race_from_device(&c));
+
+        // ---- freeform editor: select / add / remove / drag / resize / display ----
+        let c = ctx.clone();
+        rl.on_node_select(move |id: SharedString| {
+            if let Some(u) = c.ui.upgrade() {
+                u.global::<RaceLayout>().set_sel_id(id);
+                let st = c.lock();
+                push_edit_module(&u, &st);
+                crate::ui_bridge::race::push_nodes(&u, &st);
+            }
+        });
+        let c = ctx.clone();
+        rl.on_node_add(move |ty: SharedString| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                let mut m = default_spec(ty.as_str());
+                let id = format!("{}-{}", ty.as_str(), st.uid);
+                st.uid += 1;
+                m.id = id.clone();
+                m.display = st.edit_display;
+                // Drop a default 140×70 box near the middle of the panel.
+                m.x = 170;
+                m.y = 125;
+                m.w = 140;
+                m.h = 70;
+                st.nodes.push(m);
+                u.global::<RaceLayout>().set_sel_id(sstr(&id));
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+        let c = ctx.clone();
+        rl.on_node_remove(move |id: SharedString| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                st.nodes.retain(|m| m.id != id.as_str());
+                if u.global::<RaceLayout>().get_sel_id().as_str() == id.as_str() {
+                    u.global::<RaceLayout>().set_sel_id(sstr(""));
+                }
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+        let c = ctx.clone();
+        rl.on_node_drag_start(move |id: SharedString| {
+            let mut st = c.lock();
+            if let Some(m) = st.nodes.iter().find(|m| m.id == id.as_str()) {
+                st.drag_origin = Some((m.id.clone(), m.x, m.y, m.w, m.h));
+            }
+        });
+        // During a drag we update state + re-render the preview image live, but do
+        // NOT rebuild the node-overlay model (that would recreate the elements and
+        // kill the in-progress gesture). The overlay box follows via a local offset.
+        let c = ctx.clone();
+        rl.on_node_move(move |dx, dy| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                if let Some((id, ox, oy, _, _)) = st.drag_origin.clone() {
+                    if let Some(m) = st.nodes.iter_mut().find(|m| m.id == id) {
+                        m.x = (ox + dx).clamp(0, 480 - m.w.max(1));
+                        m.y = (oy + dy).clamp(0, 320 - m.h.max(1));
+                    }
+                    crate::ui_bridge::uidoc::push_preview(&u, &st);
+                }
+            }
+        });
+        let c = ctx.clone();
+        rl.on_node_resize(move |dw, dh| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                if let Some((id, _, _, ow, oh)) = st.drag_origin.clone() {
+                    if let Some(m) = st.nodes.iter_mut().find(|m| m.id == id) {
+                        m.w = (ow + dw).clamp(20, 480 - m.x);
+                        m.h = (oh + dh).clamp(16, 320 - m.y);
+                    }
+                    crate::ui_bridge::uidoc::push_preview(&u, &st);
+                }
+            }
+        });
+        let c = ctx.clone();
+        rl.on_node_drag_end(move || {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                st.drag_origin = None;
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+        let c = ctx.clone();
+        rl.on_set_node_geo(move |x, y, w, h| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                with_selected(&u, &mut st, |m| {
+                    m.w = w.clamp(20, 480);
+                    m.h = h.clamp(16, 320);
+                    m.x = x.clamp(0, 480 - m.w);
+                    m.y = y.clamp(0, 320 - m.h);
+                });
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+        let c = ctx.clone();
+        rl.on_switch_display(move |d| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                st.edit_display = d.clamp(0, 1) as u8;
+                u.global::<RaceLayout>().set_sel_id(sstr(""));
+                refresh_race(&u, &st);
+            }
+        });
     }
 
     {

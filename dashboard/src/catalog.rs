@@ -115,11 +115,55 @@ pub fn default_spec(ty: &str) -> ModSpec {
     m
 }
 
+// Race panel geometry: zone rects matching the firmware ZONES table. Used to give
+// zone-authored modules concrete freeform rects when seeding the freeform editor.
+const ZONES_GEO: [(&str, i32, i32, i32, i32, bool); 5] = [
+    ("topStrip", 0, 2, 480, 42, true),
+    ("leftRail", 4, 50, 128, 220, false),
+    ("center", 136, 50, 208, 220, false),
+    ("rightRail", 348, 50, 128, 220, false),
+    ("bottom", 0, 276, 480, 42, true),
+];
+
+/// Lay a zone-based layout out into freeform nodes (on display 0), matching the
+/// firmware's per-zone auto-layout — so existing presets open as draggable boxes.
+pub fn zones_to_nodes(zones: &[Zone]) -> Vec<ModSpec> {
+    let mut out: Vec<ModSpec> = Vec::new();
+    for &(key, zx, zy, zw, zh, horiz) in ZONES_GEO.iter() {
+        let zone = match zones.iter().find(|z| z.key == key) {
+            Some(z) => z,
+            None => continue,
+        };
+        let mods: Vec<&ModSpec> = zone.modules.iter().filter(|m| m.enabled).collect();
+        let n = mods.len() as i32;
+        if n == 0 {
+            continue;
+        }
+        for (i, m) in mods.iter().enumerate() {
+            let i = i as i32;
+            let (x, y, w, h) = if horiz {
+                (zx + zw * i / n, zy, zw / n, zh)
+            } else {
+                (zx, zy + zh * i / n, zw, zh / n)
+            };
+            let mut node = (*m).clone();
+            node.x = x;
+            node.y = y;
+            node.w = w;
+            node.h = h;
+            node.display = 0;
+            out.push(node);
+        }
+    }
+    out
+}
+
 fn make_preset(uid: &mut i32, name: &str, builtin: bool, spec: &[(&str, &[&str])]) -> Preset {
     let mut p = Preset {
         name: name.into(),
         builtin,
         zones: Vec::new(),
+        nodes: Vec::new(),
     };
     for z in 0..5 {
         let mut zn = Zone {
@@ -139,6 +183,7 @@ fn make_preset(uid: &mut i32, name: &str, builtin: bool, spec: &[(&str, &[&str])
         }
         p.zones.push(zn);
     }
+    p.nodes = zones_to_nodes(&p.zones);
     p
 }
 
@@ -205,6 +250,7 @@ pub fn seed_presets(s: &mut State) {
         ],
     ));
     s.zones = s.presets[0].zones.clone();
+    s.nodes = s.presets[0].nodes.clone();
     s.active_preset = 0;
 }
 

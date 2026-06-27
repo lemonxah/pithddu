@@ -140,8 +140,16 @@ export struct ZoneModule {
     kind: string, field: string, label: string, unit: string,
     fmt: string, scale: int, base: string, rule-summary: string,
     size: int,   // text size as % of box height (0 = auto-fit)
+    x: int, y: int, w: int, h: int,   // freeform rect (device px)
     // option-list indices for ComboBox current-index (Slint ignores current-value writes)
     kind-idx: int, field-idx: int, fmt-idx: int, base-idx: int,
+}
+
+// One freeform node overlay drawn on top of the pith-ui preview image. The
+// pixels come from the image; this is just the interactive selection/drag box.
+export struct NodeBox {
+    id: string, x: int, y: int, w: int, h: int,   // device px
+    kind: string, label: string, selected: bool,
 }
 export struct LayoutZone { key: string, title: string, modules: [ZoneModule] }
 export struct PresetCard { name: string, summary: string, active: bool, builtin: bool }
@@ -165,6 +173,9 @@ export global RaceLayout {
     in-out property <[LayoutZone]> zones: [];           // authoring model
     in-out property <[ResolvedZone]> render-zones: [];  // resolved preview model
     in property <image> preview-image;                  // pith-ui rendered mirror (pixel-identical to device)
+    in-out property <[NodeBox]> nodes: [];              // freeform node overlays (current display)
+    in-out property <int> edit-display: 0;             // which display the editor is showing (0/1)
+    in property <int> display-count: 1;                // # of displays the device exposes
     in-out property <[ModuleDef]> catalog: [];          // module templates you can add
     in property <string> main-res: "480×320";           // main display resolution (from caps)
     in-out property <bool> dirty: false;                // unsaved changes
@@ -202,6 +213,16 @@ export global RaceLayout {
     callback remove-rule(int /*idx*/);
     callback save();
     callback read-device();   // pull the active layout back from the device (@RG)
+    // --- freeform editor ---
+    callback node-select(string /*id*/);
+    callback node-add(string /*type*/);                 // add a node to the current display
+    callback node-remove(string /*id*/);
+    callback node-drag-start(string /*id*/);            // begin a move/resize gesture
+    callback node-move(int /*dx*/, int /*dy*/);         // device-px delta from gesture start
+    callback node-resize(int /*dw*/, int /*dh*/);       // device-px size delta from gesture start
+    callback node-drag-end();                           // commit + persist
+    callback set-node-geo(int /*x*/, int /*y*/, int /*w*/, int /*h*/);  // precise numeric placement
+    callback switch-display(int);
 }
 
 // ---- Car library / lovely-car-data (§6) ----
