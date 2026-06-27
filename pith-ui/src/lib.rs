@@ -121,6 +121,33 @@ pub enum Kind {
     Flag { field: u8, base: Pal, rules: Vec<Rule> },
     /// Track-map placeholder.
     Map,
+    /// A live value with no caption (the decomposed half of `Stat`); align within
+    /// its box. The composition engine pairs this with a `Label`.
+    Value { field: u8, fmt: Option<Fmt>, scale: i32, unit: String, base: Pal, rules: Vec<Rule>, size: u8, align: Align },
+    /// A composable widget: an element tree laid out inside the node's rect. This
+    /// is how built-in and custom widgets are expressed (label vs value position,
+    /// row/column arrangement, …) without new Rust per widget.
+    Widget(alloc::boxed::Box<El>),
+}
+
+/// One child of a `Row`/`Col`, with a flex weight (share of the main axis).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Slot {
+    pub flex: u16,
+    pub el: El,
+}
+
+/// An element in a widget tree: a layout container or a leaf (any [`Kind`]).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum El {
+    /// Lay children left-to-right, splitting width by flex weight.
+    Row { gap: u8, pad: u8, children: Vec<Slot> },
+    /// Lay children top-to-bottom, splitting height by flex weight.
+    Col { gap: u8, pad: u8, children: Vec<Slot> },
+    /// Overlay all children in the same (padded) box.
+    Stack { pad: u8, children: Vec<El> },
+    /// A drawable leaf — any widget kind, rendered in its computed rect.
+    Leaf(Kind),
 }
 
 /// A positioned node: an absolute rectangle + what to draw in it.
@@ -153,6 +180,60 @@ impl UiDoc {
     }
     pub fn from_postcard(bytes: &[u8]) -> Result<Self, postcard::Error> {
         postcard::from_bytes(bytes)
+    }
+}
+
+/// The default content for a built-in widget kind. Decomposable widgets (e.g.
+/// `stat`) come back as a composable [`Kind::Widget`] element tree (so the editor
+/// can rearrange label vs value); the rest stay as their primitive kind. This is
+/// the single source of built-in widget definitions, shared by device + desktop.
+#[allow(clippy::too_many_arguments)]
+pub fn builtin(
+    kind: &str,
+    field: u8,
+    label: &str,
+    fmt: Option<Fmt>,
+    scale: i32,
+    unit: &str,
+    base: Pal,
+    rules: Vec<Rule>,
+    size: u8,
+) -> Kind {
+    use alloc::boxed::Box;
+    match kind {
+        // Caption above value — a Col of a Label + a value-only leaf, so the editor
+        // can flip it to a Row, swap order, realign, etc.
+        "stat" => Kind::Widget(Box::new(El::Col {
+            gap: 2,
+            pad: 2,
+            children: Vec::from([
+                Slot {
+                    flex: 1,
+                    el: El::Leaf(Kind::Label {
+                        text: label.to_string(),
+                        color: Pal::Dim,
+                        size: 11,
+                        align: Align::Center,
+                    }),
+                },
+                Slot {
+                    flex: 2,
+                    el: El::Leaf(Kind::Value { field, fmt, scale, unit: unit.to_string(), base, rules, size, align: Align::Center }),
+                },
+            ]),
+        })),
+        "bar" => Kind::Bar { field, label: label.to_string(), scale, base, rules },
+        "gearSpeed" => Kind::GearSpeed { speed: true },
+        "gear" => Kind::GearSpeed { speed: false },
+        "rpmStrip" => Kind::RpmStrip,
+        "tyreGrid" => Kind::TyreGrid,
+        "tcDual" => Kind::TcDual,
+        "sectors" => Kind::Sectors,
+        "lapPair" => Kind::LapPair,
+        "position" => Kind::Position { label: label.to_string() },
+        "flag" => Kind::Flag { field, base, rules },
+        "map" => Kind::Map,
+        _ => Kind::Stat { field, label: label.to_string(), fmt, scale, unit: unit.to_string(), base, rules, size },
     }
 }
 
@@ -308,6 +389,78 @@ fn draw_kind<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, kind: &Kind, t:
                 .into_styled(PrimitiveStyle::with_stroke(pal(Pal::Dim), 1))
                 .draw(d);
         }
+        Kind::Value { field, fmt, scale, unit, base, rules, size, align } => {
+            let raw = field_value(t, *field as usize);
+            let def = field_def(*field as usize);
+            let f = fmt.unwrap_or_else(|| def.map(|d| d.fmt).unwrap_or(Fmt::Int));
+            let sc = if *scale > 0 { *scale } else { def.map(|d| d.scale).unwrap_or(1) };
+            let sz = if *size == 0 { 22 } else { *size as u32 };
+            let ax = match align {
+                Align::Left => x + 2,
+                Align::Center => cx,
+                Align::Right => x + w - 2,
+            };
+            let s = format::format(raw, f, sc, unit);
+            text(d, &s, ax, y + h / 2, sz, rule_color(raw, *base, rules), align.h(), VerticalPosition::Center);
+        }
+        Kind::Widget(el) => layout_draw(d, r, el, t, now_ms),
+    }
+}
+
+/// Inset a rect by `pad` on all sides (clamped to non-negative size).
+fn inset(r: &Rect, pad: i32) -> Rect {
+    Rect {
+        x: r.x + pad,
+        y: r.y + pad,
+        w: (r.w as i32 - 2 * pad).max(0) as u32,
+        h: (r.h as i32 - 2 * pad).max(0) as u32,
+    }
+}
+
+/// Lay out + draw an element tree inside `r`. Row/Col split the main axis by flex
+/// weight; Stack overlays; Leaf draws via [`draw_kind`] (so every existing widget
+/// is reusable as a building block).
+fn layout_draw<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, el: &El, t: &Telemetry, now_ms: i64) {
+    match el {
+        El::Leaf(k) => draw_kind(d, r, k, t, now_ms),
+        El::Stack { pad, children } => {
+            let inner = inset(r, *pad as i32);
+            for c in children {
+                layout_draw(d, &inner, c, t, now_ms);
+            }
+        }
+        El::Row { gap, pad, children } => {
+            let inner = inset(r, *pad as i32);
+            let n = children.len() as i32;
+            if n == 0 {
+                return;
+            }
+            let total: i32 = children.iter().map(|s| s.flex.max(1) as i32).sum();
+            let avail = (inner.w as i32 - *gap as i32 * (n - 1).max(0)).max(0);
+            let mut cx = inner.x;
+            for s in children {
+                let cw = avail * s.flex.max(1) as i32 / total;
+                let cr = Rect { x: cx, y: inner.y, w: cw.max(0) as u32, h: inner.h };
+                layout_draw(d, &cr, &s.el, t, now_ms);
+                cx += cw + *gap as i32;
+            }
+        }
+        El::Col { gap, pad, children } => {
+            let inner = inset(r, *pad as i32);
+            let n = children.len() as i32;
+            if n == 0 {
+                return;
+            }
+            let total: i32 = children.iter().map(|s| s.flex.max(1) as i32).sum();
+            let avail = (inner.h as i32 - *gap as i32 * (n - 1).max(0)).max(0);
+            let mut cy = inner.y;
+            for s in children {
+                let ch = avail * s.flex.max(1) as i32 / total;
+                let cr = Rect { x: inner.x, y: cy, w: inner.w, h: ch.max(0) as u32 };
+                layout_draw(d, &cr, &s.el, t, now_ms);
+                cy += ch + *gap as i32;
+            }
+        }
     }
 }
 
@@ -327,7 +480,10 @@ fn node_sig(kind: &Kind, t: &Telemetry, now_ms: i64) -> u64 {
     let fv = |id: u8| field_value(t, id as usize) as i64;
     match kind {
         Kind::Panel { .. } | Kind::Label { .. } | Kind::Map => 0,
-        Kind::Stat { field, .. } | Kind::Bar { field, .. } | Kind::Flag { field, .. } => h(&[fv(*field)]),
+        Kind::Stat { field, .. }
+        | Kind::Bar { field, .. }
+        | Kind::Flag { field, .. }
+        | Kind::Value { field, .. } => h(&[fv(*field)]),
         Kind::GearSpeed { speed } => h(&[t.gear as i64, if *speed { t.speed_kmh as i64 } else { 0 }]),
         // blink phase keeps the rev strip live
         Kind::RpmStrip => h(&[t.rpm as i64, t.max_rpm as i64, t.shift_rpm as i64, now_ms / 80]),
@@ -336,6 +492,22 @@ fn node_sig(kind: &Kind, t: &Telemetry, now_ms: i64) -> u64 {
         Kind::Sectors => h(&[t.s1_ms as i64, t.s2_ms as i64, t.s3_ms as i64, t.bs1_ms as i64, t.bs2_ms as i64, t.bs3_ms as i64]),
         Kind::LapPair => h(&[t.cur_lap_ms as i64, t.best_lap_ms as i64]),
         Kind::Position { .. } => h(&[t.position as i64, t.field_size as i64]),
+        Kind::Widget(el) => el_sig(el, t, now_ms),
+    }
+}
+
+/// Combine the signatures of an element tree (so a composed widget repaints iff
+/// any of its leaves' telemetry changed).
+fn el_sig(el: &El, t: &Telemetry, now_ms: i64) -> u64 {
+    fn mix(a: u64, b: u64) -> u64 {
+        (a ^ b).wrapping_mul(0x100000001b3)
+    }
+    match el {
+        El::Leaf(k) => node_sig(k, t, now_ms),
+        El::Stack { children, .. } => children.iter().fold(0, |a, c| mix(a, el_sig(c, t, now_ms))),
+        El::Row { children, .. } | El::Col { children, .. } => {
+            children.iter().fold(0, |a, s| mix(a, el_sig(&s.el, t, now_ms)))
+        }
     }
 }
 
@@ -503,4 +675,38 @@ pub fn demo_telem() -> Telemetry {
     t.tt_rl_m = 97;
     t.tt_rr_m = 86;
     t
+}
+
+#[cfg(all(test, feature = "std"))]
+mod engine_tests {
+    use super::*;
+
+    // The composition engine lays out + draws a Widget(Col[Label, Value]) without
+    // panicking and paints pixels (the built-in `stat` is now this tree).
+    #[test]
+    fn widget_col_renders() {
+        let k = builtin("stat", 23, "FUEL", None, 10, "L", Pal::Cyan, Vec::new(), 24);
+        assert!(matches!(k, Kind::Widget(_)));
+        let screen = Screen {
+            display: 0,
+            w: 120,
+            h: 80,
+            bg: Pal::Bg,
+            nodes: Vec::from([Node { rect: Rect { x: 0, y: 0, w: 120, h: 80 }, kind: k }]),
+        };
+        let t = demo_telem();
+        let mut fb = Framebuffer::new(120, 80);
+        render_screen(&screen, &t, 0, &mut fb);
+        // some non-background pixels were drawn
+        let bg = pal(Pal::Bg);
+        assert!(fb_any_non_bg(&fb, bg), "widget drew nothing");
+    }
+
+    fn fb_any_non_bg(fb: &Framebuffer, bg: Rgb565) -> bool {
+        let rgba = fb.to_rgba8();
+        let bgr = ((bg.r() as u32) << 3, (bg.g() as u32) << 2, (bg.b() as u32) << 3);
+        let _ = bgr;
+        // any pixel whose alpha row differs from a flat fill -> just check variance
+        rgba.chunks(4).any(|p| p[0] > 40 || p[1] > 40 || p[2] > 40)
+    }
 }

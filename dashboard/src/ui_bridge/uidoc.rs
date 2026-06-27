@@ -39,42 +39,19 @@ fn kind_of(m: &ModSpec) -> Kind {
         Some(Fmt::from_str(&m.fmt_type))
     };
     let size = m.size_pct.clamp(0, 255) as u8;
-    match m.kind.as_str() {
-        "bar" => Kind::Bar {
-            field,
-            label: m.label.clone(),
-            scale: m.scale,
-            base,
-            rules: rules_of(m),
-        },
-        "gearSpeed" => Kind::GearSpeed { speed: true },
-        "gear" => Kind::GearSpeed { speed: false },
-        "rpmStrip" => Kind::RpmStrip,
-        "tyreGrid" => Kind::TyreGrid,
-        "tcDual" => Kind::TcDual,
-        "sectors" => Kind::Sectors,
-        "lapPair" => Kind::LapPair,
-        "position" => Kind::Position {
-            label: m.label.clone(),
-        },
-        "flag" => Kind::Flag {
-            field,
-            base,
-            rules: rules_of(m),
-        },
-        "map" => Kind::Map,
-        // "stat" and any unknown kind fall back to a stat (the most general widget).
-        _ => Kind::Stat {
-            field,
-            label: m.label.clone(),
-            fmt,
-            scale: m.scale,
-            unit: m.unit.clone(),
-            base,
-            rules: rules_of(m),
-            size,
-        },
-    }
+    // The shared builtin() defines each widget — decomposable ones (stat) come
+    // back as a composable Widget(El) tree the editor can rearrange.
+    pith_ui::builtin(
+        &m.kind,
+        field,
+        &m.label,
+        fmt,
+        m.scale,
+        &m.unit,
+        base,
+        rules_of(m),
+        size,
+    )
 }
 
 /// Build a pith-ui `Screen` from the freeform nodes assigned to `display`.

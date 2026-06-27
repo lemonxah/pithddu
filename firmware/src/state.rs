@@ -318,7 +318,7 @@ impl AppState {
         let board = option_env!("PITHDDU_BOARD").unwrap_or("xiao_s3");
         let p = &self.pins;
         format!(
-            "{{\"name\":\"Pith DDU\",\"fw\":\"0.9.8\",\"board\":\"{board}\",\"serial\":\"{serial}\",\"buttonPages\":{bp},\
+            "{{\"name\":\"Pith DDU\",\"fw\":\"0.9.9\",\"board\":\"{board}\",\"serial\":\"{serial}\",\"buttonPages\":{bp},\
 \"screens\":[{{\"role\":\"main\",\"w\":480,\"h\":320,\"touch\":true}},\
 {{\"role\":\"side\",\"w\":480,\"h\":320,\"touch\":true}}],\
 \"leds\":{{\"rev\":{lr},\"tc\":{lt},\"abs\":{la},\"separate\":true}},\
