@@ -4,7 +4,6 @@
 import { Theme } from "../theme.slint";
 import { RaceLayout, Telemetry, PresetCard, LayoutZone, ZoneModule, ModuleDef, RuleRow, DeviceCaps } from "../models.slint";
 import { Card, PrimaryButton, GhostButton, ToggleSwitch, SectionLabel, Dot } from "../widgets.slint";
-import { DeviceScreen } from "../components/device-screen.slint";
 import { ComboBox, LineEdit, Button, Slider } from "std-widgets.slint";
 
 // One draggable module row inside a zone.
@@ -304,12 +303,15 @@ export component RaceScreen inherits Rectangle {
                                 drop-shadow-color: #000000;
                                 background: #000000;
                                 border-radius: 16px;
-                                DeviceScreen {
+                                // The real pith-ui engine renders this image (same fonts +
+                                // draw code as the device), so it is pixel-identical to the panel.
+                                Image {
                                     x: 6px;
                                     y: 6px;
                                     width: parent.width - 12px;
                                     height: parent.height - 12px;
-                                    mode: 0;
+                                    source: RaceLayout.preview-image;
+                                    image-rendering: pixelated;
                                 }
                             }
                         }

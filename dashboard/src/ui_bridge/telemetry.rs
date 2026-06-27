@@ -122,6 +122,7 @@ pub fn apply_status(ui: &AppWindow, s: &mut State, ctx: &Arc<Ctx>, line: &str) {
     s.telem[FIELD_DELTA_MS] = delta;
     s.telem[FIELD_FUEL_DL] = (fuel * 10.0 + 0.5) as i32;
     super::race::push_resolved(ui, s);
+    super::uidoc::push_preview(ui, s);
 }
 
 pub fn apply_telemetry(ui: &AppWindow, s: &mut State, line: &str) {
@@ -151,6 +152,7 @@ pub fn apply_telemetry(ui: &AppWindow, s: &mut State, line: &str) {
     t.set_delta(s.telem[FIELD_DELTA_MS] as f32 / 10000.0);
     t.set_fuel(s.telem[FIELD_FUEL_DL] as f32 / 10.0);
     super::race::push_resolved(ui, s);
+    super::uidoc::push_preview(ui, s);
 }
 
 pub fn apply_caps(ui: &AppWindow, s: &mut State, line: &str) {

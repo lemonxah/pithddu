@@ -175,6 +175,7 @@ pub fn init(ui: &AppWindow, rt: &tokio::runtime::Runtime) -> Arc<Ctx> {
         push_zones(ui, &st);
         push_presets(ui, &st);
         push_resolved(ui, &st);
+        crate::ui_bridge::uidoc::push_preview(ui, &st);
         push_editor_options(ui, &st);
         push_buttons_model(ui, &st);
         push_pins(ui, &st);

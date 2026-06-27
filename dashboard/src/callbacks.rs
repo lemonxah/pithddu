@@ -349,8 +349,18 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
             let msg = if !c.dash().connected() {
                 "Not connected".to_string()
             } else {
-                let json = build_race_layout_json(&c.lock());
-                if c.dash().push_race(&json) {
+                let (race_json, ui_json) = {
+                    let st = c.lock();
+                    (
+                        build_race_layout_json(&st),
+                        crate::ui_bridge::uidoc::build_uidoc_json(&st),
+                    )
+                };
+                // Push the legacy @RS layout (fallback) AND the pith-ui UiDoc (@UI),
+                // which the firmware renders with dirty-rect when present.
+                let ok_race = c.dash().push_race(&race_json);
+                let ok_ui = c.dash().push_ui(&ui_json);
+                if ok_race || ok_ui {
                     let mut st = c.lock();
                     st.race_dirty = false;
                     rl.set_dirty(false);

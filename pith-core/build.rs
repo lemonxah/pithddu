@@ -61,7 +61,33 @@ fn main() {
         out.push_str(&format!("        {} => t.{},\n", idx + 1, field));
     }
     out.push_str("        _ => 0,\n");
-    out.push_str("    }\n}\n");
+    out.push_str("    }\n}\n\n");
+
+    // set_field: inverse of field_value — write a raw value into the field id's
+    // struct slot. Lets a flat field array (e.g. the dashboard's telem[]) be
+    // rehydrated into a Telemetry for the shared renderer.
+    out.push_str("/// Write raw value `v` into field `id` (1-based); no-op for none / out of range.\n");
+    out.push_str("pub fn set_field(t: &mut Telemetry, id: usize, v: i32) {\n");
+    out.push_str("    match id {\n");
+    for (idx, f) in fields.iter().enumerate() {
+        let accessor = f["accessor"].as_str().expect("field.accessor");
+        let field = accessor.strip_prefix("t->").unwrap();
+        out.push_str(&format!("        {} => t.{} = v,\n", idx + 1, field));
+    }
+    out.push_str("        _ => {}\n");
+    out.push_str("    }\n}\n\n");
+
+    // telemetry_from_fields: rebuild a Telemetry from a flat array indexed by
+    // field id (index 0 = none). gear is not a numeric field, so set it after.
+    out.push_str("/// Rebuild a Telemetry from a flat field array (index = field id, 0 = none).\n");
+    out.push_str("pub fn telemetry_from_fields(fields: &[i32]) -> Telemetry {\n");
+    out.push_str("    let mut t = Telemetry::default();\n");
+    out.push_str("    let mut id = 1;\n");
+    out.push_str("    while id < fields.len() {\n");
+    out.push_str("        set_field(&mut t, id, fields[id]);\n");
+    out.push_str("        id += 1;\n");
+    out.push_str("    }\n");
+    out.push_str("    t\n}\n");
 
     let dest = Path::new(&std::env::var("OUT_DIR").unwrap()).join("field_registry.rs");
     std::fs::write(&dest, out).expect("write field_registry.rs");

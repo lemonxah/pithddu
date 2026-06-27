@@ -6,6 +6,7 @@ pub mod race;
 pub mod shift;
 pub mod simhub;
 pub mod telemetry;
+pub mod uidoc;
 
 use slint::{Color, ModelRc, SharedString, VecModel};
 
@@ -38,4 +39,5 @@ pub fn refresh_race(ui: &crate::AppWindow, s: &crate::state::State) {
     race::push_presets(ui, s);
     race::push_resolved(ui, s);
     race::push_edit_module(ui, s);
+    uidoc::push_preview(ui, s);
 }

@@ -164,6 +164,7 @@ export global RaceLayout {
     in-out property <[PresetCard]> presets: [];
     in-out property <[LayoutZone]> zones: [];           // authoring model
     in-out property <[ResolvedZone]> render-zones: [];  // resolved preview model
+    in property <image> preview-image;                  // pith-ui rendered mirror (pixel-identical to device)
     in-out property <[ModuleDef]> catalog: [];          // module templates you can add
     in property <string> main-res: "480×320";           // main display resolution (from caps)
     in-out property <bool> dirty: false;                // unsaved changes

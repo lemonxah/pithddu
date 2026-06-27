@@ -92,6 +92,12 @@ impl Dash {
         self.logln(&format!("race: {r}"));
         ok
     }
+    /// Push a pith-ui UiDoc (JSON) for the device to render with dirty-rect.
+    pub fn push_ui(&mut self, json: &str) -> bool {
+        let (ok, r) = self.command(&format!("@UI{json}"));
+        self.logln(&format!("ui: {r}"));
+        ok
+    }
     pub fn push_buttons(&mut self, json: &str) -> bool {
         let (ok, r) = self.command(&format!("@BS{json}"));
         self.logln(&format!("buttons: {r}"));
