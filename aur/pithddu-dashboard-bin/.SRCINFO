@@ -1,0 +1,24 @@
+pkgbase = pithddu-dashboard-bin
+	pkgdesc = SimHub companion app for the Pith DDU sim-racing dash (prebuilt binary)
+	pkgver = 0.6.2
+	pkgrel = 1
+	url = https://github.com/lemonxah/pithddu-dashboard
+	arch = x86_64
+	license = BSD-3-Clause
+	makedepends = patchelf
+	depends = curl
+	depends = hidapi
+	depends = fontconfig
+	depends = freetype2
+	depends = libxkbcommon
+	depends = wayland
+	depends = libglvnd
+	optdepends = systemd-libs: system-tray (StatusNotifierItem) support
+	provides = pithddu-dashboard=0.6.2
+	provides = pith-dashboard
+	conflicts = pithddu-dashboard
+	options = !strip
+	source = pithddu-dashboard-bin-0.6.2.tar.gz::https://github.com/lemonxah/pithddu-dashboard/releases/download/v0.6.2/pith-dashboard-linux-x86_64.tar.gz
+	sha256sums = fe8bb7711004eb09db494dbabc1e16a130992ac31f9b3be3803f89431dfa46c2
+
+pkgname = pithddu-dashboard-bin

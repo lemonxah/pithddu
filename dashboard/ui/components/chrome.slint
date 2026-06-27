@@ -1,0 +1,241 @@
+// Title bar + left sidebar nav (HANDOFF.md §1 app shell).
+import { Theme } from "../theme.slint";
+import { AppState, Page, Firmware } from "../models.slint";
+import { Dot } from "../widgets.slint";
+
+export component TitleBar inherits Rectangle {
+    height: 46px;
+    background: Theme.titlebar;
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 12px;
+        spacing: 10px;
+        // logo
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 23px;
+                height: 23px;
+                border-radius: 6px;
+                background: Theme.accent;
+                Text {
+                    text: "P";
+                    color: Theme.accent-text;
+                    font-family: Theme.display-font;
+                    font-weight: 700;
+                    font-size: 15px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: "PITH";
+                    color: Theme.text;
+                    font-family: Theme.display-font;
+                    font-weight: 700;
+                    font-size: 16px;
+                    letter-spacing: 2px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "DASHBOARD";
+                    color: Theme.text3;
+                    font-family: Theme.display-font;
+                    font-weight: 600;
+                    font-size: 16px;
+                    letter-spacing: 2px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        Rectangle { }  // spacer
+        // device pill
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                height: 28px;
+                border-radius: 14px;
+                background: Theme.panel;
+                border-width: 1px;
+                border-color: Theme.line;
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 8px;
+                    alignment: center;
+                    VerticalLayout { alignment: center; Dot { tint: AppState.connected ? Theme.green : Theme.text3; } }
+                    Text {
+                        text: AppState.device-name;
+                        color: Theme.text2;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: AppState.fw-version;
+                        color: Theme.text3;
+                        font-family: Theme.mono-font;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+        // window controls
+        for ctrl[i] in [{ g: "—", close: false }, { g: "▢", close: false }, { g: "✕", close: true }]: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 32px;
+                height: 32px;
+                border-radius: 6px;
+                background: ta.has-hover ? (ctrl.close ? Theme.red : Theme.panel) : transparent;
+                Text {
+                    text: ctrl.g;
+                    color: ta.has-hover && ctrl.close ? white : Theme.text2;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                ta := TouchArea {
+                    clicked => {
+                        if (ctrl.close) { AppState.close(); } else { AppState.minimize(); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component NavRow inherits Rectangle {
+    in property <string> glyph;
+    in property <string> label;
+    in property <bool> active: false;
+    in property <bool> dot: false;
+    callback clicked;
+    height: 40px;
+    background: active ? Theme.accent-dim : (ta.has-hover ? Theme.panel : transparent);
+    border-radius: 8px;
+    // inset accent left bar when active
+    Rectangle {
+        x: 0;
+        width: 2px;
+        height: active ? 22px : 0px;
+        y: parent.height / 2 - self.height / 2;
+        background: Theme.accent;
+        border-radius: 1px;
+        animate height { duration: 120ms; }
+    }
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 12px;
+        spacing: 11px;
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.glyph;
+                color: active ? Theme.accent : Theme.text2;
+                font-size: 14px;
+                width: 16px;
+                horizontal-alignment: center;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.label;
+                color: active ? Theme.text : Theme.text2;
+                font-family: Theme.body-font;
+                font-size: 14px;
+                font-weight: active ? 600 : 500;
+                vertical-alignment: center;
+            }
+        }
+        Rectangle { }
+        if root.dot: VerticalLayout {
+            alignment: center;
+            Rectangle { width: 6px; height: 6px; border-radius: 3px; background: Theme.accent; }
+        }
+    }
+    ta := TouchArea { clicked => { root.clicked(); } }
+}
+
+export component Sidebar inherits Rectangle {
+    width: 212px;
+    background: Theme.sidebar;
+    VerticalLayout {
+        padding: 14px;
+        spacing: 4px;
+        Text {
+            text: "CONFIGURE";
+            color: Theme.text3;
+            font-family: Theme.display-font;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 1.6px;
+        }
+        Rectangle { height: 6px; }
+        NavRow { glyph: "▦"; label: "Overview"; active: AppState.page == Page.overview; clicked => { AppState.page = Page.overview; } }
+        NavRow { glyph: "▤"; label: "Race Screen"; active: AppState.page == Page.race; clicked => { AppState.page = Page.race; } }
+        NavRow { glyph: "▥"; label: "Buttons"; active: AppState.page == Page.buttons; clicked => { AppState.page = Page.buttons; } }
+        NavRow { glyph: "▰"; label: "Shift Lights"; active: AppState.page == Page.shift; clicked => { AppState.page = Page.shift; } }
+        NavRow { glyph: "◈"; label: "Car Library"; active: AppState.page == Page.cars; clicked => { AppState.page = Page.cars; } }
+        NavRow { glyph: "⎓"; label: "SimHub"; active: AppState.page == Page.simhub; clicked => { AppState.page = Page.simhub; } }
+        NavRow { glyph: "⬡"; label: "Firmware"; active: AppState.page == Page.firmware; dot: Firmware.update-available; clicked => { AppState.page = Page.firmware; } }
+        Rectangle { }  // spacer
+        // device status card — click to open the Device config page
+        Rectangle {
+            height: 86px;
+            background: dev-ta.has-hover ? Theme.elev : Theme.panel;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: AppState.page == Page.device ? Theme.accent : Theme.line;
+            dev-ta := TouchArea { clicked => { AppState.page = Page.device; } }
+            VerticalLayout {
+                padding: 12px;
+                spacing: 7px;
+                HorizontalLayout {
+                    spacing: 7px;
+                    VerticalLayout { alignment: center; Dot { tint: AppState.connected ? Theme.green : Theme.text3; } }
+                    Text {
+                        text: AppState.device-name;
+                        color: Theme.text;
+                        font-family: Theme.display-font;
+                        font-size: 14px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+                Text {
+                    text: AppState.conn-detail;
+                    color: Theme.text3;
+                    font-size: 11px;
+                }
+                // device serial number + firmware version
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: AppState.serial != "" ? AppState.serial : "—";
+                        color: Theme.text3;
+                        font-family: Theme.mono-font;
+                        font-size: 10px;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: AppState.fw-version;
+                        color: Theme.text3;
+                        font-family: Theme.mono-font;
+                        font-size: 10px;
+                        horizontal-alignment: right;
+                    }
+                }
+            }
+        }
+    }
+    // hairline divider on the right
+    Rectangle { x: parent.width - 1px; width: 1px; background: Theme.line; }
+}

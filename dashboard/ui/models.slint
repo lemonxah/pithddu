@@ -1,0 +1,365 @@
+// Shared structs, enums and global singletons. C++ owns the data and writes
+// these globals; the UI reads them and invokes callbacks for actions.
+
+export enum Page { overview, race, buttons, shift, cars, simhub, firmware, device }
+
+// ---- SimHub custom-serial builder ----
+export struct SimField { id: string, label: string, expr: string, enabled: bool, builtin: bool }
+export global SimHub {
+    in-out property <[SimField]> fields: [];   // already filtered by `query` (C++ side)
+    in property <string> generated: "";       // full custom-serial message expression
+    in property <string> car-message: "";      // @CM car-model relay (2nd update message)
+    in property <int> baud: 115200;
+    in property <string> copy-status: "";      // transient feedback after a copy
+    in-out property <string> query: "";        // filter the field list (find dupes before adding)
+    in property <int> total-fields: 0;         // unfiltered field count (for "showing N of M")
+    callback set-query(string);
+    callback toggle-field(string /*id*/, bool);
+    callback add-field(string /*label*/, string /*expr*/);
+    callback remove-field(string /*id*/);
+    callback regenerate();
+    callback copy-generated();
+    callback copy-car-message();
+}
+
+// ---- Telemetry (live device mirror) ----
+export struct TyreCell { temp: int, col: color }
+
+export global Telemetry {
+    in property <bool> connected: false;
+    in property <string> game: "—";          // iRacing / ACC / Le Mans Ultimate / rFactor 2
+    in property <float> hz: 0;
+
+    in property <string> gear: "N";
+    in property <int> speed: 0;               // already in display units
+    in property <string> speed-unit: "KM/H";
+    in property <int> rpm: 0;
+    in property <int> redline: 8200;
+
+    in property <float> delta: 0.0;           // seconds, +behind / -ahead
+    in property <int> position: 1;
+    in property <int> field-size: 20;
+
+    in property <float> fuel: 0.0;            // litres
+    in property <int> lap-num: 0;
+    in property <string> cur-lap: "--:--.---";
+    in property <string> best-lap: "--:--.---";
+    in property <string> last-lap: "--:--.---";
+    in property <int> water-c: 0;
+    in property <int> oil-c: 0;
+    in property <float> brake-bias: 0.0;      // % front
+    in property <int> tc: 0;
+    in property <int> abs: 0;
+    in property <string> flag: "";            // green/yellow/blue/white/...
+
+    in property <[TyreCell]> tyres: [
+        { temp: 0, col: #2E9DFF }, { temp: 0, col: #2E9DFF },
+        { temp: 0, col: #2E9DFF }, { temp: 0, col: #2E9DFF } ];
+
+    // 12 LED colours for the current rpm/gear (off = transparent-ish #0c0d10)
+    in property <[color]> leds: [
+        #0c0d10, #0c0d10, #0c0d10, #0c0d10, #0c0d10, #0c0d10,
+        #0c0d10, #0c0d10, #0c0d10, #0c0d10, #0c0d10, #0c0d10 ];
+    in property <bool> redline-active: false;  // drives blink in previews
+}
+
+// ---- Shift lights config (§5) ----
+export struct Led { col: color, threshold: int }   // threshold = % of redline
+
+export global ShiftCfg {
+    in-out property <int> redline-rpm: 8200;
+    in-out property <int> first-led-pct: 62;
+    in-out property <bool> blink-enabled: true;
+    in-out property <float> blink-hz: 5.0;
+    in-out property <int> animation: 0;        // 0 L→R, 1 Center, 2 Edges
+    in-out property <int> brightness: 80;
+    in-out property <int> rpm-source: 0;       // 0 = car library, 1 = custom
+    in-out property <int> sel-gear: 1;         // 1..6
+    // 12 LEDs for the selected gear (C++ swaps this when sel-gear changes)
+    in-out property <[Led]> leds: [
+        { col: #00E676, threshold: 62 }, { col: #00E676, threshold: 66 },
+        { col: #00E676, threshold: 70 }, { col: #00E676, threshold: 74 },
+        { col: #FFB300, threshold: 78 }, { col: #FFB300, threshold: 82 },
+        { col: #FFB300, threshold: 85 }, { col: #FFB300, threshold: 88 },
+        { col: #FF3B30, threshold: 91 }, { col: #FF3B30, threshold: 94 },
+        { col: #FF3B30, threshold: 97 }, { col: #FF3B30, threshold: 99 } ];
+
+    in property <string> car-name: "Porsche 911 GT3 R";
+    in property <string> car-game: "iRacing";
+
+    callback select-gear(int);
+    callback set-led-threshold(int /*idx*/, int /*pct*/);
+    callback set-led-color(int /*idx*/, color);
+    callback save();
+    callback persist();   // remember the on-screen settings locally (no device push)
+}
+
+// ---- Touchscreen buttons (§4) ----
+export struct DashButton {
+    pos: int,
+    label: string,
+    is-toggle: bool,
+    is-on: bool,
+    action: string,
+    active-col: color,
+    sync-from-game: bool,
+    game-field: string,
+    field-available: bool,
+    field-idx: int,    // index into Buttons.field-options for the ComboBox
+}
+
+export global Buttons {
+    in-out property <int> page: 0;            // active page index
+    in-out property <int> page-count: 3;      // 1..5 pages
+    in-out property <[int]> page-list: [0, 1, 2];  // [0..page-count-1] for the tab loop
+    in-out property <int> sel: 0;             // selected tile 0..5
+    in-out property <[DashButton]> tiles: []; // the active page's 6 tiles
+    in-out property <[string]> actions: [];   // bound-action dropdown options
+    in-out property <[string]> field-options: [];  // reported game fields to bind toggles to
+    in-out property <string> save-status: "";       // push result feedback
+
+    callback select-tile(int /*page*/, int /*pos*/);
+    callback set-label(string);
+    callback set-kind(bool /*toggle*/);
+    callback set-action(string);
+    callback set-sync(bool);
+    callback set-field(string);
+    callback set-color(color);
+    callback add-page();
+    callback delete-page(int);
+    callback select-page(int);
+    callback save();
+}
+
+// ---- Race layout: the dumbed-down layout language (§3) ----
+// A race screen = zones, each holding an ordered list of modules. A module has a
+// stable id (unique instance), a type (what it draws), a display name and on/off.
+// Authoring view of a module: identity + the full editable design-language spec.
+export struct ZoneModule {
+    id: string, type: string, name: string, enabled: bool,
+    kind: string, field: string, label: string, unit: string,
+    fmt: string, scale: int, base: string, rule-summary: string,
+    size: int,   // text size as % of box height (0 = auto-fit)
+    // option-list indices for ComboBox current-index (Slint ignores current-value writes)
+    kind-idx: int, field-idx: int, fmt-idx: int, base-idx: int,
+}
+export struct LayoutZone { key: string, title: string, modules: [ZoneModule] }
+export struct PresetCard { name: string, summary: string, active: bool, builtin: bool }
+export struct ModuleDef { type: string, name: string, desc: string }   // catalog entry
+
+// One color rule (op value -> color token) for the module edit panel.
+export struct RuleRow { op: string, v: int, color: string, op-idx: int, color-idx: int }
+
+// A module fully RESOLVED by C++ for the preview: value text + color already
+// computed from the same field registry + format_common + palette the device
+// uses, so the preview renders identically to the device.
+export struct ResolvedModule {
+    zone: string, order: int, kind: string,
+    label: string, value: string, value-col: color, pct: int, enabled: bool,
+    size: int,   // text size % (0 = auto)
+}
+export struct ResolvedZone { key: string, modules: [ResolvedModule] }
+
+export global RaceLayout {
+    in-out property <[PresetCard]> presets: [];
+    in-out property <[LayoutZone]> zones: [];           // authoring model
+    in-out property <[ResolvedZone]> render-zones: [];  // resolved preview model
+    in-out property <[ModuleDef]> catalog: [];          // module templates you can add
+    in property <string> main-res: "480×320";           // main display resolution (from caps)
+    in-out property <bool> dirty: false;                // unsaved changes
+    in-out property <string> save-status: "";           // last push result (feedback)
+
+    // ---- module edit panel (the selected module's spec) ----
+    in-out property <string> sel-zone: "";
+    in-out property <string> sel-id: "";
+    in-out property <bool> dragging: false;   // true while a module is being dragged (disables list scroll)
+    in-out property <ZoneModule> edit;                  // selected module's spec
+    in-out property <[RuleRow]> edit-rules: [];
+    in-out property <[string]> field-options: [];       // bindable telemetry fields
+    in-out property <[string]> kind-options: [];
+    in-out property <[string]> palette-options: [];
+    in-out property <[string]> fmt-options: [];
+
+    callback select-preset(int);
+    callback new-preset(string /*name*/);               // snapshot current zones as a preset
+    callback update-preset();                           // save current edits into the active preset (persists)
+    callback delete-preset(int);
+    callback toggle-module(string /*zoneKey*/, string /*moduleId*/, bool);
+    callback add-module(string /*zoneKey*/, string /*moduleType*/);
+    callback remove-module(string /*zoneKey*/, string /*moduleId*/);
+    callback move-module(string /*zoneKey*/, int /*from*/, int /*to*/);
+    callback select-module(string /*zoneKey*/, string /*moduleId*/);
+    callback set-mod-kind(string);
+    callback set-mod-field(string);
+    callback set-mod-label(string);
+    callback set-mod-unit(string);
+    callback set-mod-fmt(string);
+    callback set-mod-base(string);
+    callback set-mod-size(int);
+    callback add-rule();
+    callback set-rule(int /*idx*/, string /*op*/, string /*v*/, string /*color*/);
+    callback remove-rule(int /*idx*/);
+    callback save();
+    callback read-device();   // pull the active layout back from the device (@RG)
+}
+
+// ---- Car library / lovely-car-data (§6) ----
+export struct CarRow {
+    id: string,
+    badge: string,
+    name: string,
+    make: string,
+    klass: string,
+    year: int,
+    power: string,
+    redline: int,
+    active: bool,
+    leds: [color],     // shift-light colours from lovely-car-data (preview)
+}
+
+export global CarLib {
+    in-out property <[string]> games: ["iRacing", "ACC", "Le Mans Ultimate", "Automobilista 2"];
+    in property <bool> have-db: false;        // local DB downloaded?
+    in property <string> db-info: "";         // e.g. "684 cars · cached"
+    in-out property <int> game: 0;
+    in-out property <string> query: "";
+    in-out property <[string]> classes: ["All classes", "GT3", "GT4", "Cup", "Road"];
+    in-out property <int> klass: 0;
+    in-out property <[CarRow]> results: [];
+    in-out property <int> total-cars: 0;
+    in-out property <int> sel: -1;        // selected result index
+    in property <bool> loading: false;
+    in property <string> status: "";
+    in property <bool> downloading: false;         // bulk dataset download in progress
+    in property <float> download-progress: 0.0;    // 0..1 for the progress bar
+    in-out property <string> detected-game: "";   // sim detected running (auto-selected)
+    in-out property <string> detected-car: "";     // car model reported by SimHub (CarModel)
+
+    callback select-game(int);
+    callback set-query(string);
+    callback select-class(int);
+    callback select-car(int);
+    callback set-active(int);
+    callback apply-redline(int);          // -> Shift Lights
+    callback refresh();
+}
+
+// ---- Firmware (§8) ----
+export enum FwState { idle, available, downloading, verifying, flashing, success, failure }
+export struct FwComponent { name: string, version: string, updating: bool, target: string }
+
+export global Firmware {
+    in property <bool> update-available: false;
+    in property <string> current: "—";       // version reported by the connected device (@CAP)
+    in property <string> latest: "—";         // version this app can build/flash
+    in property <string> release-date: "—";
+    in property <string> size: "—";
+    in property <[string]> notes: [];
+    in property <[FwComponent]> components: [];
+    in-out property <bool> auto-install: false;
+    in property <FwState> state: FwState.idle;
+    in property <float> progress: 0;       // 0..1
+    in property <string> status-line: "";
+    in-out property <string> bin-path: "";  // local firmware .bin to OTA-flash
+    in property <bool> have-bin: false;     // a build/pithddu.bin exists on disk
+
+    // ---- firmware build (pick a board + compile the .bin locally) ----
+    in property <bool> can-build: false;    // ESP-IDF toolchain detected -> build is possible
+    in property <bool> building: false;     // a build is in progress
+    in property <float> build-progress: 0;  // 0..1 (parsed from ninja [n/total])
+    in property <string> build-status: "";  // one-line result/feedback
+    in property <string> build-log: "";     // tail of the build output
+
+    // ---- published firmware releases (GitHub) — pick a version to flash ----
+    in property <[string]> releases: [];        // version tags, newest first ("v0.9.2 · 4 boards")
+    in-out property <int> sel-release: 0;        // selected release index
+    in property <string> releases-status: "";    // fetch/flash feedback
+    in property <bool> release-has-board: false; // selected release has a build for the current board
+    in property <bool> latest-has-board: false;  // newest release has a build for the current board
+    in property <bool> fetching-releases: false;
+
+    callback refresh-releases();
+    callback select-release(int);
+    callback flash-release();   // download the selected version's bin for the board + OTA it
+
+    // ---- initial / full-image flash over USB serial (no PithDDU running yet) ----
+    in property <[string]> serial-ports: [];   // "/dev/ttyACM0 · Espressif · ESP32-S3" labels
+    in property <int> esp-port-count: 0;        // how many look like a flashable ESP32
+    in-out property <int> serial-port: 0;       // selected port index
+    in-out property <bool> full-image: true;    // include bootloader + partition table (first setup)
+    in property <bool> flashing-serial: false;
+    in property <float> serial-progress: 0;
+    in property <string> serial-status: "";
+    in property <string> serial-log: "";
+
+    callback install();
+    callback retry();
+    callback build();           // compile firmware for the board selected in DeviceCfg
+    callback cancel-build();
+    callback flash-built();     // OTA-flash the freshly built bin (same as install)
+    callback refresh-ports();   // re-scan serial ports
+    callback serial-flash();    // build + flash the selected board over the selected port
+}
+
+// ---- Device config: GPIO pin layout (pushed to the device, applied on reboot) ----
+export struct PinRow { key: string, label: string, gpio: int, opt-idx: int }
+export global DeviceCfg {
+    in-out property <[PinRow]> pins: [];
+    in-out property <[string]> pin-options: [];   // selected board's silkscreen pin names
+    in-out property <[string]> boards: [];        // supported board names
+    in-out property <int> board: 0;               // selected board index
+    in-out property <int> race-screen: 0;     // which display index shows the race screen (other = buttons)
+    // LED strip (order on the chain: rev/shift, then TC, then ABS)
+    in-out property <int> led-rev: 12;
+    in-out property <int> led-tc: 2;
+    in-out property <int> led-abs: 2;
+    in-out property <bool> led-rgbw: true;    // SK6812 RGBW vs WS2812 RGB
+    in-out property <string> pins-status: "";
+    callback set-pin(string /*key*/, int /*option-index*/);
+    callback set-board(int);
+    callback set-race-screen(int);
+    callback set-led-rev(int);
+    callback set-led-tc(int);
+    callback set-led-abs(int);
+    callback set-led-rgbw(bool);
+    callback save-pins();        // push @PINS — the device reboots to apply
+}
+
+// ---- Device capabilities (reported by the device on connect, §handshake) ----
+export struct ScreenSpec { role: string, w: int, h: int, touch: bool }
+
+export global DeviceCaps {
+    in property <bool> known: false;
+    in property <[ScreenSpec]> screens: [];   // labelled main / side
+    in property <string> main-res: "—";       // e.g. "480×320"
+    in property <string> side-res: "—";
+    in property <int> main-w: 480;            // numeric dims for sizing previews
+    in property <int> main-h: 320;
+    in property <int> side-w: 480;
+    in property <int> side-h: 320;
+    in property <int> rev-leds: 0;            // shift / rev LEDs
+    in property <int> tc-leds: 0;             // traction-control side LEDs
+    in property <int> abs-leds: 0;            // ABS side LEDs
+    in property <bool> separate-strip: true;  // shift strip distinct from TC/ABS
+    in property <int> button-pages: 3;        // button pages on the side screen
+    in property <string> summary: "";
+}
+
+// ---- App-wide state + device actions ----
+export global AppState {
+    in-out property <Page> page: Page.overview;
+    in property <string> device-name: "Pith DDU";
+    in property <string> fw-version: "v2.4.1";
+    in property <bool> connected: false;
+    in property <string> conn-detail: "Disconnected";
+    in property <int> health-pct: 0;
+    in property <string> serial: "";       // device serial number (from @CAP)
+    in property <string> sync-status: "";  // transient feedback for the "Sync device" pull
+    in-out property <int> units: 0;        // 0 KM/H, 1 MPH
+
+    callback connect();
+    callback disconnect();
+    callback sync-device();
+    callback minimize();
+    callback close();
+}

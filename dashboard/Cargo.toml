@@ -1,0 +1,61 @@
+[package]
+name = "pith-dashboard"
+version = "0.7.0"
+edition = "2021"
+description = "SimHub companion app for the Pith DDU sim-racing dash"
+license = "BSD-3-Clause"
+repository = "https://github.com/lemonxah/pithddu"
+default-run = "pith-dashboard"
+
+[[bin]]
+name = "pith-dashboard"
+path = "src/main.rs"
+
+[dependencies]
+# Shared runtime UI engine (workspace crate). `std` gives us the framebuffer target
+# for the in-app preview.
+pith-ui = { path = "../pith-ui", features = ["std"] }
+slint = { version = "1.17", default-features = false, features = ["backend-winit", "renderer-femtovg", "renderer-software", "accessibility", "compat-1-2", "std"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "fs"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hidapi = "2"
+serialport = "4"
+flate2 = "1"
+tar = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# async-io backend (NOT tokio): Slint's accessibility uses zbus via async-io on the
+# main thread; matching that keeps zbus uniformly async-io so no D-Bus call needs a
+# tokio runtime context (the tokio backend panics accesskit at startup).
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3", default-features = false, features = ["async-io"] }
+
+[build-dependencies]
+slint-build = "1.17"
+serde_json = "1"
+
+[profile.release]
+opt-level = 2
+strip = true
+codegen-units = 1
+
+# `cargo deb` packaging (replaces the old CPack DEB rules). The Slint runtime is
+# statically linked into the binary, so there's no vendored .so to ship.
+[package.metadata.deb]
+section = "utils"
+priority = "optional"
+depends = "$auto"
+maintainer = "Ryno Kotze <lemon.xah@gmail.com>"
+extended-description = "SimHub companion app for the Pith DDU sim-racing dash: configure shift lights, touch buttons, the race-screen layout and per-car data; build, update and flash the firmware; and mirror live telemetry."
+assets = [
+    ["target/release/pith-dashboard", "usr/bin/", "755"],
+    ["pith-dashboard.desktop", "usr/share/applications/", "644"],
+    ["icon.png", "usr/share/icons/hicolor/128x128/apps/pith-dashboard.png", "644"],
+    ["99-pithddu.rules", "usr/lib/udev/rules.d/99-pithddu.rules", "644"],
+    ["LICENSE", "usr/share/licenses/pith-dashboard/LICENSE", "644"],
+]

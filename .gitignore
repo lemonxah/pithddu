@@ -1,0 +1,7 @@
+/target
+/firmware/target
+/firmware/.embuild
+**/preview.png
+*.swp
+.DS_Store
+nohup.out

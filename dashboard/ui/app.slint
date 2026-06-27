@@ -1,0 +1,86 @@
+// Bundle the three font families (HANDOFF.md §1 typography).
+import "../fonts/Rajdhani-Medium.ttf";
+import "../fonts/Rajdhani-SemiBold.ttf";
+import "../fonts/Rajdhani-Bold.ttf";
+import "../fonts/BarlowSemiCondensed-Regular.ttf";
+import "../fonts/BarlowSemiCondensed-Medium.ttf";
+import "../fonts/BarlowSemiCondensed-SemiBold.ttf";
+import "../fonts/JetBrainsMono-Regular.ttf";
+import "../fonts/JetBrainsMono-Medium.ttf";
+import "../fonts/JetBrainsMono-Bold.ttf";
+// Device fonts (GNU FreeFont) — used only in the simulated device screen so the
+// preview matches what the firmware renders (LovyanGFX FreeMono/FreeSans).
+import "../fonts/FreeMono.ttf";
+import "../fonts/FreeSans.ttf";
+
+import { Theme } from "theme.slint";
+import { AppState, Page } from "models.slint";
+import { TitleBar, Sidebar } from "components/chrome.slint";
+import { OverviewScreen } from "screens/overview.slint";
+import { RaceScreen } from "screens/race-screen.slint";
+import { ButtonsScreen } from "screens/buttons.slint";
+import { ShiftScreen } from "screens/shift-lights.slint";
+import { CarsScreen } from "screens/car-library.slint";
+import { SimHubScreen } from "screens/simhub.slint";
+import { FirmwareScreen } from "screens/firmware.slint";
+import { DeviceConfigScreen } from "screens/device.slint";
+
+// Re-export globals so C++ can reach them via the generated header.
+export { AppState, Telemetry, ShiftCfg, Buttons, RaceLayout, CarLib, Firmware, DeviceCaps, SimHub, DeviceCfg } from "models.slint";
+
+export component AppWindow inherits Window {
+    title: "Pith Dashboard";
+    icon: @image-url("../icon.png");
+    default-font-family: Theme.body-font;
+    background: Theme.bg;
+    preferred-width: 1320px;
+    preferred-height: 860px;
+    min-width: 1120px;
+    min-height: 700px;
+
+    VerticalLayout {
+        TitleBar { }
+        // Body. Everything below the title bar is disabled until a device is
+        // connected (the overlay swallows all input + dims the UI).
+        Rectangle {
+            HorizontalLayout {
+                opacity: AppState.connected ? 1.0 : 0.35;
+                Sidebar { }
+                // content router
+                Rectangle {
+                    background: Theme.bg;
+                    if AppState.page == Page.overview: OverviewScreen { }
+                    if AppState.page == Page.race: RaceScreen { }
+                    if AppState.page == Page.buttons: ButtonsScreen { }
+                    if AppState.page == Page.shift: ShiftScreen { }
+                    if AppState.page == Page.cars: CarsScreen { }
+                    if AppState.page == Page.simhub: SimHubScreen { }
+                    if AppState.page == Page.firmware: FirmwareScreen { }
+                    if AppState.page == Page.device: DeviceConfigScreen { }
+                }
+            }
+            // "no device" gate — blocks interaction while disconnected.
+            if !AppState.connected: Rectangle {
+                background: Theme.bg.with-alpha(0.55);
+                // catch every pointer event so nothing underneath is clickable
+                TouchArea { }
+                Rectangle {
+                    width: min(440px, parent.width - 80px);
+                    height: 150px;
+                    background: Theme.panel;
+                    border-radius: Theme.radius-card;
+                    border-width: 1px;
+                    border-color: Theme.line2;
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 8px;
+                        padding: 24px;
+                        Text { text: "No device connected"; color: Theme.text; font-family: Theme.display-font; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
+                        Text { text: "Connect your Pith DDU over USB to edit and push settings."; color: Theme.text3; font-size: 13px; horizontal-alignment: center; wrap: word-wrap; }
+                        Text { text: AppState.conn-detail; color: Theme.text2; font-family: Theme.mono-font; font-size: 11px; horizontal-alignment: center; }
+                    }
+                }
+            }
+        }
+    }
+}

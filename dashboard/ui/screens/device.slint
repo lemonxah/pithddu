@@ -1,0 +1,212 @@
+// Device configuration: connection info and the GPIO pin layout (pushed to the
+// device; applied on reboot). Firmware build/OTA lives on the Firmware tab.
+import { Theme } from "../theme.slint";
+import { AppState, Page, DeviceCaps, DeviceCfg, PinRow } from "../models.slint";
+import { Card, PrimaryButton, GhostButton, SectionLabel, Dot, ToggleSwitch } from "../widgets.slint";
+import { LineEdit, Button, ComboBox, ScrollView } from "std-widgets.slint";
+
+// Pin picker with a scrollable popup that flips upward near the window bottom.
+component PinPicker inherits Rectangle {
+    in property <[string]> options;
+    in property <int> index;
+    in property <bool> flip-up: false;
+    callback picked(int);
+    width: 100px;
+    height: 30px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: ta.has-hover ? Theme.line2 : Theme.line;
+    background: ta.has-hover ? Theme.elev : Theme.panel2;
+    HorizontalLayout {
+        padding-left: 8px; padding-right: 6px;
+        Text { text: root.index >= 0 ? root.options[root.index] : "—"; color: Theme.text; font-family: Theme.mono-font; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
+        Text { text: "▾"; color: Theme.text3; font-size: 10px; vertical-alignment: center; }
+    }
+    ta := TouchArea { clicked => { pop.show(); } }
+    pop := PopupWindow {
+        x: 0;
+        y: root.flip-up ? -208px : root.height + 4px;
+        width: 110px;
+        height: 204px;
+        Rectangle {
+            background: Theme.elev;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: Theme.line2;
+            Flickable {
+                viewport-height: col.preferred-height;
+                col := VerticalLayout {
+                    padding: 4px;
+                    for o[i] in root.options: Rectangle {
+                        height: 24px;
+                        border-radius: 4px;
+                        background: i == root.index ? Theme.accent-dim : (opta.has-hover ? Theme.panel : transparent);
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            Text { text: o; color: i == root.index ? Theme.accent : Theme.text2; font-family: Theme.mono-font; font-size: 12px; vertical-alignment: center; }
+                        }
+                        opta := TouchArea { clicked => { root.picked(i); pop.close(); } }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component DeviceConfigScreen inherits Rectangle {
+    ScrollView {
+        VerticalLayout {
+        padding: 24px;
+        spacing: 16px;
+        alignment: start;
+        // header
+        VerticalLayout {
+            spacing: 3px;
+            Text { text: "Device"; color: Theme.text; font-family: Theme.display-font; font-size: 24px; font-weight: 700; }
+            Text { text: "Connection, board and pin layout"; color: Theme.text3; font-size: 13px; }
+        }
+
+        HorizontalLayout {
+            spacing: 18px;
+
+            // ---- left: connection + firmware ----
+            VerticalLayout {
+                width: 420px;
+                spacing: 16px;
+                alignment: start;
+
+                Card {
+                    VerticalLayout {
+                        padding: 16px; spacing: 8px;
+                        SectionLabel { text: "CONNECTION"; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            VerticalLayout { alignment: center; Dot { tint: AppState.connected ? Theme.green : Theme.text3; } }
+                            Text { text: AppState.device-name; color: Theme.text; font-size: 15px; font-weight: 600; vertical-alignment: center; }
+                            Rectangle { }
+                            Text { text: AppState.fw-version; color: Theme.text3; font-family: Theme.mono-font; font-size: 12px; vertical-alignment: center; }
+                        }
+                        Text { text: AppState.conn-detail; color: Theme.text2; font-size: 12px; }
+                    }
+                }
+
+                Card {
+                    VerticalLayout {
+                        padding: 16px; spacing: 6px;
+                        SectionLabel { text: "FIRMWARE"; }
+                        Text { text: "Firmware builds and OTA updates live on the Firmware tab."; color: Theme.text3; font-size: 12px; wrap: word-wrap; }
+                        VerticalLayout { alignment: start;
+                            GhostButton { text: "Open Firmware →"; clicked => { AppState.page = Page.firmware; } }
+                        }
+                    }
+                }
+            }
+
+            // ---- right: display roles + pin layout ----
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 16px;
+                alignment: start;
+                Card {
+                    VerticalLayout {
+                        padding: 16px; spacing: 8px;
+                        SectionLabel { text: "BOARD"; }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            Text { text: "Board"; color: Theme.text; font-size: 13px; vertical-alignment: center; }
+                            Rectangle { }
+                            ComboBox {
+                                width: 220px;
+                                model: DeviceCfg.boards;
+                                current-index: DeviceCfg.board;
+                                selected(v) => { DeviceCfg.set-board(self.current-index); }
+                            }
+                        }
+                        Text { text: "Pick your board so the pin names below match its silkscreen."; color: Theme.text3; font-size: 11px; wrap: word-wrap; }
+                    }
+                }
+                Card {
+                    VerticalLayout {
+                        padding: 16px; spacing: 8px;
+                        SectionLabel { text: "DISPLAY ROLES"; }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            Text { text: "Race screen on"; color: Theme.text; font-size: 13px; vertical-alignment: center; }
+                            Rectangle { }
+                            ComboBox {
+                                width: 150px;
+                                model: ["Display 1", "Display 2"];
+                                current-index: DeviceCfg.race-screen;
+                                selected(v) => { DeviceCfg.set-race-screen(self.current-index); }
+                            }
+                        }
+                        Text { text: "The other display shows the button pages. Applied on reboot (Save Pins)."; color: Theme.text3; font-size: 11px; wrap: word-wrap; }
+                    }
+                }
+                Card {
+                    VerticalLayout {
+                        padding: 16px; spacing: 8px;
+                        SectionLabel { text: "LED STRIP"; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            VerticalLayout { spacing: 3px; horizontal-stretch: 1;
+                                Text { text: "REV / SHIFT"; color: Theme.text3; font-size: 10px; }
+                                LineEdit { text: "\{DeviceCfg.led-rev}"; input-type: number; edited(t) => { DeviceCfg.set-led-rev(t.to-float()); } }
+                            }
+                            VerticalLayout { spacing: 3px; horizontal-stretch: 1;
+                                Text { text: "TC"; color: Theme.text3; font-size: 10px; }
+                                LineEdit { text: "\{DeviceCfg.led-tc}"; input-type: number; edited(t) => { DeviceCfg.set-led-tc(t.to-float()); } }
+                            }
+                            VerticalLayout { spacing: 3px; horizontal-stretch: 1;
+                                Text { text: "ABS"; color: Theme.text3; font-size: 10px; }
+                                LineEdit { text: "\{DeviceCfg.led-abs}"; input-type: number; edited(t) => { DeviceCfg.set-led-abs(t.to-float()); } }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text { text: "Total: " + (DeviceCfg.led-rev + DeviceCfg.led-tc + DeviceCfg.led-abs) + " LEDs"; color: Theme.text2; font-family: Theme.mono-font; font-size: 12px; vertical-alignment: center; }
+                            Rectangle { }
+                            Text { text: "RGBW (SK6812)"; color: Theme.text3; font-size: 12px; vertical-alignment: center; }
+                            VerticalLayout { alignment: center; ToggleSwitch { on: DeviceCfg.led-rgbw; toggled(v) => { DeviceCfg.set-led-rgbw(v); } } }
+                        }
+                        Text { text: "Chain order: rev/shift, then TC, then ABS. Turn off RGBW for WS2812 (3-colour) strips. Applied on reboot (Save Pins)."; color: Theme.text3; font-size: 11px; wrap: word-wrap; }
+                    }
+                }
+                HorizontalLayout {
+                    VerticalLayout { alignment: center; SectionLabel { text: "PIN LAYOUT (GPIO)"; } }
+                    Rectangle { }
+                    VerticalLayout { alignment: center;
+                        Text { text: DeviceCfg.pins-status; color: DeviceCfg.pins-status == "Saved — device rebooting to apply" ? Theme.green : Theme.amber; font-size: 12px; }
+                    }
+                }
+                Card {
+                    VerticalLayout {
+                        padding: 12px; spacing: 4px;
+                        for p[i] in DeviceCfg.pins: Rectangle {
+                            height: 42px;
+                            HorizontalLayout {
+                                padding-left: 10px; padding-right: 10px; spacing: 10px;
+                                Text { text: p.label; color: Theme.text; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
+                                Text { text: "GPIO" + p.gpio; color: Theme.text3; font-family: Theme.mono-font; font-size: 10px; vertical-alignment: center; }
+                                VerticalLayout { alignment: center;
+                                    PinPicker {
+                                        options: DeviceCfg.pin-options;
+                                        index: p.opt-idx;
+                                        flip-up: i >= 5;     // lower rows open upward to stay on-screen
+                                        picked(idx) => { DeviceCfg.set-pin(p.key, idx); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    Rectangle { }
+                    PrimaryButton { text: "SAVE PINS (REBOOTS DEVICE)"; enabled: AppState.connected; clicked => { DeviceCfg.save-pins(); } }
+                }
+                Text { text: "Pin changes take effect after the device reboots. Wrong pins can blank the display — keep the defaults unless your wiring differs."; color: Theme.text3; font-size: 11px; wrap: word-wrap; }
+            }
+        }
+        }
+    }
+}

@@ -1,0 +1,445 @@
+// Firmware — live device version, OTA update + local build (pick your controller).
+import { Theme } from "../theme.slint";
+import { AppState, Firmware, FwState, FwComponent, DeviceCaps, DeviceCfg } from "../models.slint";
+import { Card, PrimaryButton, GhostButton, ToggleSwitch, SectionLabel, Mono } from "../widgets.slint";
+import { ComboBox, CheckBox } from "std-widgets.slint";
+
+export component FirmwareScreen inherits Rectangle {
+    property <bool> busy: Firmware.state == FwState.downloading
+        || Firmware.state == FwState.verifying || Firmware.state == FwState.flashing;
+    property <bool> connected: AppState.connected;
+    // Accent the banner only while busy or while a real update is offered — never
+    // under a terminal "Update complete"/"Update failed" ack, so the card colour
+    // can't contradict its contents (green card still reading "Update complete").
+    property <bool> highlight: root.busy
+        || (Firmware.update-available
+            && Firmware.state != FwState.success && Firmware.state != FwState.failure);
+
+    Flickable {
+        viewport-width: self.width;   // vertical scroll only; content fills width
+        VerticalLayout {
+        padding: 24px;
+        spacing: 16px;
+        alignment: start;
+        HorizontalLayout {
+            VerticalLayout {
+                alignment: center;
+                spacing: 3px;
+                Text { text: "Firmware"; color: Theme.text; font-family: Theme.display-font; font-size: 24px; font-weight: 700; }
+                Text { text: AppState.device-name + " · keep connected while flashing"; color: Theme.text3; font-size: 13px; }
+            }
+            Rectangle { }
+        }
+
+        HorizontalLayout {
+            spacing: 18px;
+            // ===== left =====
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 16px;
+                // banner / install state
+                Card {
+                    background: root.highlight ? Theme.accent-dim : Theme.panel;
+                    border-color: root.highlight ? Theme.accent : Theme.line;
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 14px;
+                        // ---- progress states ----
+                        if root.busy: VerticalLayout {
+                            spacing: 12px;
+                            Text {
+                                text: Firmware.state == FwState.downloading ? "DOWNLOADING"
+                                    : Firmware.state == FwState.verifying ? "VERIFYING SIGNATURE"
+                                    : "FLASHING — DO NOT DISCONNECT";
+                                color: Theme.accent;
+                                font-family: Theme.display-font;
+                                font-size: 16px;
+                                letter-spacing: 1.5px;
+                            }
+                            Mono { text: Firmware.status-line; color: Theme.accent-soft; font-size: 12px; }
+                            Rectangle {
+                                height: 8px;
+                                background: Theme.elev;
+                                border-radius: 4px;
+                                Rectangle {
+                                    x: 0;
+                                    width: parent.width * Firmware.progress;
+                                    height: parent.height;
+                                    background: Theme.accent;
+                                    border-radius: 4px;
+                                    animate width { duration: 200ms; }
+                                }
+                            }
+                            Mono { text: Math.round(Firmware.progress * 100) + "%"; color: Theme.accent; font-size: 13px; }
+                        }
+                        // ---- success ----
+                        if Firmware.state == FwState.success: HorizontalLayout {
+                            spacing: 10px;
+                            Text { text: "✓"; color: Theme.green; font-size: 22px; }
+                            VerticalLayout {
+                                alignment: center;
+                                Text { text: "Update complete"; color: Theme.text; font-family: Theme.display-font; font-size: 16px; font-weight: 700; }
+                                Mono { text: "Now on " + Firmware.current; color: Theme.text2; font-size: 12px; }
+                            }
+                            Rectangle { }
+                            VerticalLayout {
+                                alignment: center;
+                                GhostButton {
+                                    text: Firmware.fetching-releases ? "Checking…" : "↻ Check for updates";
+                                    clicked => { Firmware.refresh-releases(); }
+                                }
+                            }
+                        }
+                        // ---- failure ----
+                        if Firmware.state == FwState.failure: HorizontalLayout {
+                            spacing: 10px;
+                            VerticalLayout {
+                                alignment: center;
+                                horizontal-stretch: 1;
+                                Text { text: "Update failed"; color: Theme.red; font-family: Theme.display-font; font-size: 16px; font-weight: 700; }
+                                Mono { text: Firmware.status-line; color: Theme.text2; font-size: 12px; }
+                            }
+                            VerticalLayout { alignment: center; PrimaryButton { text: "RETRY"; clicked => { Firmware.retry(); } } }
+                        }
+                        // ---- not connected ----
+                        if !root.connected && !root.busy
+                            && Firmware.state != FwState.success && Firmware.state != FwState.failure: HorizontalLayout {
+                            spacing: 10px;
+                            Text { text: "○"; color: Theme.text3; font-size: 20px; }
+                            VerticalLayout {
+                                alignment: center;
+                                Text { text: "Device not connected"; color: Theme.text; font-family: Theme.display-font; font-size: 16px; font-weight: 700; }
+                                Mono { text: "Connect the dash to read its firmware version"; color: Theme.text2; font-size: 12px; }
+                            }
+                        }
+                        // ---- available ----
+                        if root.connected && Firmware.update-available && !root.busy
+                            && Firmware.state != FwState.success && Firmware.state != FwState.failure: VerticalLayout {
+                            spacing: 12px;
+                            Text { text: "UPDATE AVAILABLE"; color: Theme.accent; font-family: Theme.display-font; font-size: 13px; letter-spacing: 1.5px; }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                Mono { text: Firmware.current; color: Theme.text2; font-size: 22px; vertical-alignment: center; }
+                                Text { text: "→"; color: Theme.text3; font-size: 18px; vertical-alignment: center; }
+                                Text { text: Firmware.latest; color: Theme.text; font-family: Theme.display-font; font-size: 22px; font-weight: 700; vertical-alignment: center; }
+                                Rectangle { }
+                            }
+                            Mono {
+                                text: Firmware.latest-has-board
+                                    ? ("Downloads the " + Firmware.latest + " build for your controller from GitHub.")
+                                    : "Latest release has no build for your controller — build it yourself below.";
+                                color: Theme.text3; font-size: 12px; wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                PrimaryButton {
+                                    text: "DOWNLOAD & INSTALL " + Firmware.latest;
+                                    enabled: Firmware.latest-has-board;
+                                    clicked => { Firmware.select-release(0); Firmware.flash-release(); }
+                                }
+                                Rectangle { }
+                            }
+                        }
+                        // ---- up to date ----
+                        if root.connected && !Firmware.update-available && !root.busy
+                            && Firmware.state != FwState.success && Firmware.state != FwState.failure: HorizontalLayout {
+                            spacing: 10px;
+                            Text { text: "✓"; color: Theme.green; font-size: 20px; }
+                            VerticalLayout {
+                                alignment: center;
+                                Text { text: "Up to date"; color: Theme.text; font-family: Theme.display-font; font-size: 16px; font-weight: 700; }
+                                Mono { text: "Running " + Firmware.current; color: Theme.text2; font-size: 12px; }
+                            }
+                            Rectangle { }
+                            VerticalLayout {
+                                alignment: center;
+                                GhostButton {
+                                    text: Firmware.fetching-releases ? "Checking…" : "↻ Check for updates";
+                                    clicked => { Firmware.refresh-releases(); }
+                                }
+                            }
+                        }
+                    }
+                }
+                // published firmware versions (GitHub releases) — pick one to flash
+                Card {
+                    VerticalLayout {
+                        padding: 18px;
+                        spacing: 12px;
+                        HorizontalLayout {
+                            SectionLabel { text: "FIRMWARE VERSIONS (GITHUB)"; }
+                            Rectangle { }
+                            Mono {
+                                text: Firmware.releases-status;
+                                color: Theme.text3; font-size: 11px; vertical-alignment: center;
+                            }
+                            VerticalLayout { alignment: center; GhostButton { text: "↻ Check"; clicked => { Firmware.refresh-releases(); } } }
+                        }
+                        Text {
+                            text: "Download a released version that matches your controller and flash it over USB. Device is on " + Firmware.current + ".";
+                            color: Theme.text3; font-size: 12px; wrap: word-wrap;
+                        }
+                        VerticalLayout {
+                            spacing: 6px;
+                            SectionLabel { text: "VERSION"; }
+                            if Firmware.releases.length == 0: Mono {
+                                text: Firmware.fetching-releases ? "Checking…" : "No releases found — build your own below.";
+                                color: Theme.text3; font-size: 11px;
+                            }
+                            if Firmware.releases.length > 0: ComboBox {
+                                model: Firmware.releases;
+                                current-index: Firmware.sel-release;
+                                enabled: !root.busy;
+                                selected(v) => { Firmware.select-release(self.current-index); }
+                            }
+                        }
+                        if Firmware.releases.length > 0 && !Firmware.release-has-board: Mono {
+                            text: "⚠ this version has no build for your controller — pick another, or build it yourself.";
+                            color: Theme.amber; font-size: 11px;
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            PrimaryButton {
+                                text: "DOWNLOAD & FLASH";
+                                enabled: AppState.connected && Firmware.release-has-board && !root.busy;
+                                clicked => { Firmware.flash-release(); }
+                            }
+                            if !AppState.connected: VerticalLayout { alignment: center; Mono { text: "connect device to flash"; color: Theme.text3; font-size: 11px; } }
+                            Rectangle { }
+                        }
+                    }
+                }
+                // build firmware
+                Card {
+                    VerticalLayout {
+                        padding: 18px;
+                        spacing: 12px;
+                        HorizontalLayout {
+                            SectionLabel { text: "BUILD FIRMWARE"; }
+                            Rectangle { }
+                            Mono {
+                                text: Firmware.have-bin ? "✓ bin ready" : "no bin yet";
+                                color: Firmware.have-bin ? Theme.green : Theme.text3;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Text {
+                            text: "Pick your controller and compile the firmware locally if you don't already have a .bin.";
+                            color: Theme.text3; font-size: 12px; wrap: word-wrap;
+                        }
+                        // controller picker
+                        VerticalLayout {
+                            spacing: 6px;
+                            SectionLabel { text: "CONTROLLER"; }
+                            ComboBox {
+                                model: DeviceCfg.boards;
+                                current-index: DeviceCfg.board;
+                                enabled: !Firmware.building;
+                                selected(v) => { DeviceCfg.set-board(self.current-index); }
+                            }
+                        }
+                        // toolchain missing notice
+                        if !Firmware.can-build: Mono {
+                            text: "ESP-IDF not found — building is unavailable on this machine.";
+                            color: Theme.amber; font-size: 11px;
+                        }
+                        // build in progress
+                        if Firmware.building: VerticalLayout {
+                            spacing: 8px;
+                            Rectangle {
+                                height: 8px;
+                                background: Theme.elev;
+                                border-radius: 4px;
+                                Rectangle {
+                                    x: 0;
+                                    width: parent.width * Firmware.build-progress;
+                                    height: parent.height;
+                                    background: Theme.accent;
+                                    border-radius: 4px;
+                                    animate width { duration: 200ms; }
+                                }
+                            }
+                            Mono { text: Math.round(Firmware.build-progress * 100) + "%  " + Firmware.build-log; color: Theme.accent-soft; font-size: 11px; }
+                        }
+                        // last result line
+                        if !Firmware.building && Firmware.build-status != "": Mono {
+                            text: Firmware.build-status;
+                            color: Firmware.have-bin ? Theme.green : Theme.amber;
+                            font-size: 11px;
+                        }
+                        // actions
+                        HorizontalLayout {
+                            spacing: 10px;
+                            if !Firmware.building: PrimaryButton {
+                                text: Firmware.have-bin ? "REBUILD" : "BUILD FIRMWARE";
+                                enabled: Firmware.can-build;
+                                clicked => { Firmware.build(); }
+                            }
+                            if Firmware.building: GhostButton { text: "Cancel"; clicked => { Firmware.cancel-build(); } }
+                            if Firmware.have-bin && !Firmware.building: PrimaryButton {
+                                text: "FLASH THIS BUILD";
+                                enabled: AppState.connected;
+                                clicked => { Firmware.flash-built(); }
+                            }
+                            Rectangle { }
+                        }
+                        if Firmware.bin-path != "": Mono { text: Firmware.bin-path; color: Theme.text3; font-size: 10px; }
+                    }
+                }
+                // initial / full-image flash over USB serial — only when no PithDDU is
+                // connected (a running device updates over HID instead).
+                if !root.connected: Card {
+                    VerticalLayout {
+                        padding: 18px;
+                        spacing: 12px;
+                        HorizontalLayout {
+                            SectionLabel { text: "INITIAL SETUP — FLASH OVER USB"; }
+                            Rectangle { }
+                            GhostButton { text: "↻ Rescan"; clicked => { Firmware.refresh-ports(); } }
+                        }
+                        Text {
+                            text: "No Pith DDU detected. Flash a blank/standalone ESP32 over its USB serial port. Pick the exact device below so you don't flash the wrong one.";
+                            color: Theme.text3; font-size: 12px; wrap: word-wrap;
+                        }
+                        VerticalLayout {
+                            spacing: 6px;
+                            SectionLabel { text: "TARGET SERIAL PORT"; }
+                            if Firmware.serial-ports.length == 0: Mono {
+                                text: "No serial ports found — plug in the board (hold BOOT, tap RESET for download mode), then Rescan.";
+                                color: Theme.amber; font-size: 11px;
+                            }
+                            if Firmware.serial-ports.length > 0: ComboBox {
+                                model: Firmware.serial-ports;
+                                current-index: Firmware.serial-port;
+                                enabled: !Firmware.flashing-serial;
+                                selected(v) => { Firmware.serial-port = self.current-index; }
+                            }
+                            if Firmware.serial-ports.length > 0 && Firmware.esp-port-count == 0: Mono {
+                                text: "⚠ none look like an ESP32 — double-check this is the right port.";
+                                color: Theme.amber; font-size: 11px;
+                            }
+                        }
+                        HorizontalLayout {
+                            CheckBox {
+                                checked: Firmware.full-image;
+                                text: "Full image (bootloader + partitions + app — first-time setup)";
+                                enabled: !Firmware.flashing-serial;
+                                toggled => { Firmware.full-image = self.checked; }
+                            }
+                            Rectangle { }
+                        }
+                        if Firmware.flashing-serial: VerticalLayout {
+                            spacing: 8px;
+                            Rectangle {
+                                height: 8px; background: Theme.elev; border-radius: 4px;
+                                Rectangle { x: 0; width: parent.width * Firmware.serial-progress; height: parent.height; background: Theme.accent; border-radius: 4px; animate width { duration: 200ms; } }
+                            }
+                            Mono { text: Math.round(Firmware.serial-progress * 100) + "%  " + Firmware.serial-log; color: Theme.accent-soft; font-size: 11px; }
+                        }
+                        if !Firmware.flashing-serial && Firmware.serial-status != "": Mono {
+                            text: Firmware.serial-status; color: Theme.text2; font-size: 11px;
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            if !Firmware.flashing-serial: PrimaryButton {
+                                text: Firmware.full-image ? "FLASH FULL IMAGE" : "FLASH APP";
+                                enabled: Firmware.can-build && Firmware.serial-ports.length > 0;
+                                clicked => { Firmware.serial-flash(); }
+                            }
+                            if Firmware.flashing-serial: GhostButton { text: "Cancel"; clicked => { Firmware.cancel-build(); } }
+                            Rectangle { }
+                        }
+                        if !Firmware.can-build: Mono {
+                            text: "ESP-IDF not found — flashing is unavailable on this machine.";
+                            color: Theme.amber; font-size: 11px;
+                        }
+                    }
+                }
+                // release notes
+                Card {
+                    VerticalLayout {
+                        padding: 18px;
+                        spacing: 10px;
+                        SectionLabel { text: "WHAT'S NEW"; }
+                        for n in Firmware.notes: HorizontalLayout {
+                            spacing: 8px;
+                            Text { text: "▹"; color: Theme.accent; font-size: 13px; }
+                            Text { text: n; color: Theme.text2; font-size: 13px; }
+                        }
+                        if Firmware.notes.length == 0: Text { text: "No release notes."; color: Theme.text3; font-size: 13px; }
+                    }
+                }
+                Rectangle { }
+            }
+            // ===== right =====
+            VerticalLayout {
+                width: 320px;
+                spacing: 14px;
+                // device card
+                Card {
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 11px;
+                        SectionLabel { text: "DEVICE"; }
+                        for kv in [
+                            { k: "Name", v: AppState.device-name },
+                            { k: "Controller", v: DeviceCfg.boards.length > 0 ? DeviceCfg.boards[DeviceCfg.board] : "—" },
+                            { k: "Firmware", v: root.connected ? Firmware.current : "—" },
+                            { k: "Serial", v: AppState.serial != "" ? AppState.serial : "—" },
+                            { k: "Connection", v: AppState.conn-detail },
+                        ]: HorizontalLayout {
+                            Text { text: kv.k; color: Theme.text3; font-size: 13px; }
+                            Rectangle { }
+                            Mono { text: kv.v; color: Theme.text; font-size: 13px; }
+                        }
+                        // reported capabilities (@CAP handshake)
+                        if DeviceCaps.known: HorizontalLayout {
+                            Text { text: "Main screen"; color: Theme.text3; font-size: 13px; }
+                            Rectangle { }
+                            Mono { text: DeviceCaps.main-res; color: Theme.text; font-size: 13px; }
+                        }
+                        if DeviceCaps.known: HorizontalLayout {
+                            Text { text: "Side screen"; color: Theme.text3; font-size: 13px; }
+                            Rectangle { }
+                            Mono { text: DeviceCaps.side-res; color: Theme.text; font-size: 13px; }
+                        }
+                        if DeviceCaps.known: HorizontalLayout {
+                            Text { text: "Shift LEDs"; color: Theme.text3; font-size: 13px; }
+                            Rectangle { }
+                            Mono { text: DeviceCaps.rev-leds + " rev + " + DeviceCaps.tc-leds + " TC + " + DeviceCaps.abs-leds + " ABS"; color: Theme.text; font-size: 13px; }
+                        }
+                    }
+                }
+                // components (live, reported by the device)
+                Card {
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 11px;
+                        SectionLabel { text: "COMPONENTS"; }
+                        for c in Firmware.components: HorizontalLayout {
+                            spacing: 8px;
+                            Text { text: c.name; color: Theme.text2; font-size: 13px; vertical-alignment: center; }
+                            Rectangle { }
+                            Mono {
+                                text: c.updating ? c.version + " → " + c.target : c.version;
+                                color: c.updating ? Theme.accent : Theme.text3;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            if !c.updating: Text { text: "✓"; color: Theme.green; font-size: 13px; vertical-alignment: center; }
+                        }
+                        if Firmware.components.length == 0: Text { text: root.connected ? "—" : "Connect to read components."; color: Theme.text3; font-size: 13px; }
+                        Rectangle { height: 2px; }
+                        HorizontalLayout {
+                            Text { text: "Auto-install updates"; color: Theme.text2; font-size: 13px; vertical-alignment: center; }
+                            Rectangle { }
+                            ToggleSwitch { on: Firmware.auto-install; toggled(v) => { Firmware.auto-install = v; } }
+                        }
+                    }
+                }
+                Rectangle { }
+            }
+        }
+        }
+    }
+}

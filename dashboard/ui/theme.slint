@@ -1,0 +1,52 @@
+// Pith Dashboard design tokens (HANDOFF.md §1). Single source of truth for
+// colours, fonts and shape used by every screen.
+export global Theme {
+    // --- surfaces ---
+    out property <color> bg: #0A0B0D;          // app background
+    out property <color> panel: #131519;       // cards, inputs, list rows
+    out property <color> panel2: #181B20;      // push-button tiles
+    out property <color> elev: #1E2127;        // selected/active sub-rows, inset chips
+    out property <color> titlebar: #0D0E11;    // title bar + active page chrome
+    out property <color> sidebar: #0C0D10;     // left nav + right inspector panels
+    out property <color> device: #060708;      // simulated 320x240 device screen
+
+    // --- lines ---
+    out property <color> line: rgba(255,255,255,0.07);
+    out property <color> line2: rgba(255,255,255,0.13);
+
+    // --- text ---
+    out property <color> text: #E8EAED;        // primary
+    out property <color> text2: #98A0AA;       // secondary
+    out property <color> text3: #636A74;       // muted labels, units
+
+    // --- accent (THE signal colour) ---
+    out property <color> accent: #00E5A0;
+    out property <color> accent-dim: rgba(0,229,160,0.12);
+    out property <color> accent-text: #04130D;   // text on accent button
+    out property <color> accent-soft: #7FC9B1;
+    out property <color> accent-bright: #CFEEE2;
+
+    // --- LED / status palette (tyre temps & deltas too) ---
+    out property <color> green: #00E676;
+    out property <color> amber: #FFB300;
+    out property <color> red: #FF3B30;
+    out property <color> blue: #2E9DFF;
+    out property <color> magenta: #D500F9;
+
+    // --- typography families (bundled TTFs registered in app.slint) ---
+    out property <string> display-font: "Rajdhani";          // titles, big numbers, labels
+    out property <string> body-font: "Barlow Semi Condensed"; // body / UI text
+    out property <string> mono-font: "JetBrains Mono";        // every number that is data
+
+    // Fonts used ONLY inside the simulated device screen so the preview matches
+    // what the firmware actually renders (LovyanGFX FreeMono/FreeSans). Set to
+    // the bundled GNU FreeFont families.
+    out property <string> device-mono: "FreeMono";
+    out property <string> device-display: "FreeSans";
+
+    // --- shape ---
+    out property <length> radius-card: 12px;
+    out property <length> radius-input: 8px;
+    out property <length> radius-chip: 6px;
+    out property <length> radius-device: 14px;
+}

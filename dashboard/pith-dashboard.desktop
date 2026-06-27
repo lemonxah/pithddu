@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Pith Dashboard
+GenericName=Sim Racing Dashboard
+Comment=SimHub companion for the Pith DDU
+Exec=pith-dashboard
+Icon=pith-dashboard
+Terminal=false
+Categories=Utility;Game;
+StartupNotify=true
+StartupWMClass=pith-dashboard

@@ -1,0 +1,185 @@
+// Overview / home (HANDOFF.md §9).
+import { Theme } from "../theme.slint";
+import { AppState, Page, Telemetry, ShiftCfg, Firmware, CarLib, DeviceCaps } from "../models.slint";
+import { Card, PrimaryButton, Dot, Mono } from "../widgets.slint";
+import { DeviceScreen } from "../components/device-screen.slint";
+
+component QuickCard inherits Rectangle {
+    callback clicked;
+    background: Theme.panel;
+    border-radius: Theme.radius-card;
+    border-width: 1px;
+    border-color: ta.has-hover ? Theme.line2 : Theme.line;
+    animate border-color { duration: 100ms; }
+    ta := TouchArea { clicked => { root.clicked(); } }
+}
+
+export component OverviewScreen inherits Rectangle {
+    Flickable {
+        VerticalLayout {
+            padding: 24px;
+            spacing: 16px;
+            alignment: start;   // keep content pinned top-left (don't vertically center when short)
+            // header
+            HorizontalLayout {
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 3px;
+                    Text { text: "Overview"; color: Theme.text; font-family: Theme.display-font; font-size: 24px; font-weight: 700; }
+                    Text { text: AppState.device-name + " · default profile"; color: Theme.text3; font-size: 13px; }
+                }
+                Rectangle { }
+                HorizontalLayout {
+                    spacing: 10px;
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        PrimaryButton {
+                            text: "SYNC FROM DEVICE";
+                            enabled: AppState.connected;
+                            clicked => { AppState.sync-device(); }
+                        }
+                        if AppState.sync-status != "": Text {
+                            text: AppState.sync-status;
+                            color: Theme.text3; font-size: 10px; horizontal-alignment: right;
+                        }
+                    }
+                }
+            }
+            // device status banner
+            Card {
+                height: 84px;
+                HorizontalLayout {
+                    padding: 18px;
+                    spacing: 24px;
+                    for f in [
+                        { k: "DEVICE", v: AppState.device-name },
+                        { k: "FIRMWARE", v: AppState.fw-version },
+                        { k: "MAIN", v: DeviceCaps.main-res },
+                        { k: "SIDE", v: DeviceCaps.side-res },
+                        { k: "CONNECTION", v: AppState.conn-detail },
+                    ]: VerticalLayout {
+                        alignment: center;
+                        spacing: 5px;
+                        Text { text: f.k; color: Theme.text3; font-family: Theme.display-font; font-size: 10.5px; letter-spacing: 1.2px; }
+                        Text { text: f.v; color: Theme.text; font-family: Theme.mono-font; font-size: 14px; }
+                    }
+                    Rectangle { }
+                    if Firmware.update-available: Rectangle {
+                        width: 200px;
+                        background: Theme.accent-dim;
+                        border-radius: 9px;
+                        border-width: 1px;
+                        border-color: Theme.accent;
+                        VerticalLayout {
+                            alignment: center;
+                            padding-left: 12px;
+                            spacing: 2px;
+                            Text { text: "UPDATE AVAILABLE"; color: Theme.accent; font-family: Theme.display-font; font-size: 11px; letter-spacing: 1px; }
+                            Text { text: Firmware.current + " → " + Firmware.latest; color: Theme.accent-soft; font-family: Theme.mono-font; font-size: 11px; }
+                        }
+                        TouchArea { clicked => { AppState.page = Page.firmware; } }
+                    }
+                }
+            }
+            // auto-detected running game (process scan) + car model (SimHub CarModel)
+            Card {
+                height: 64px;
+                HorizontalLayout {
+                    padding: 18px;
+                    spacing: 28px;
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 5px;
+                        Text { text: "DETECTED GAME"; color: Theme.text3; font-family: Theme.display-font; font-size: 10.5px; letter-spacing: 1.2px; }
+                        HorizontalLayout {
+                            spacing: 7px;
+                            VerticalLayout { alignment: center; Dot { tint: CarLib.detected-game != "" ? Theme.green : Theme.text3; } }
+                            Text { text: CarLib.detected-game != "" ? CarLib.detected-game : "Not detected"; color: Theme.text; font-family: Theme.mono-font; font-size: 14px; vertical-alignment: center; }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 5px;
+                        Text { text: "DETECTED CAR"; color: Theme.text3; font-family: Theme.display-font; font-size: 10.5px; letter-spacing: 1.2px; }
+                        Text { text: CarLib.detected-car != "" ? CarLib.detected-car : "—"; color: Theme.text; font-family: Theme.mono-font; font-size: 14px; }
+                    }
+                    Rectangle { }
+                }
+            }
+            // FULL race screen preview (tall, shows everything the device renders)
+            QuickCard {
+                height: 360px;
+                clicked => { AppState.page = Page.race; }
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 10px;
+                    HorizontalLayout {
+                        Text { text: "RACE SCREEN"; color: Theme.text3; font-family: Theme.display-font; font-size: 11px; letter-spacing: 1.2px; vertical-alignment: center; }
+                        Rectangle { }
+                        Mono { text: "Main · " + DeviceCaps.main-res; color: Theme.text3; font-size: 11px; }
+                    }
+                    Rectangle {
+                        vertical-stretch: 1;
+                        Rectangle {
+                            width: 432px;
+                            height: 288px;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            background: #000000;
+                            border-radius: 14px;
+                            DeviceScreen { x: 6px; y: 6px; width: parent.width - 12px; height: parent.height - 12px; mode: 0; }
+                        }
+                    }
+                }
+            }
+            // quick cards row
+            HorizontalLayout {
+                spacing: 16px;
+                height: 168px;
+                QuickCard {
+                    clicked => { AppState.page = Page.buttons; }
+                    VerticalLayout { padding: 16px; spacing: 8px;
+                        Text { text: "BUTTONS"; color: Theme.text3; font-family: Theme.display-font; font-size: 11px; letter-spacing: 1.2px; }
+                        Text { text: DeviceCaps.button-pages + " pages · 6 tiles each"; color: Theme.text2; font-size: 14px; }
+                        Mono { text: "Side · " + DeviceCaps.side-res; color: Theme.text3; font-size: 12px; }
+                        Rectangle { }
+                    }
+                }
+                QuickCard {
+                    clicked => { AppState.page = Page.shift; }
+                    VerticalLayout { padding: 16px; spacing: 10px;
+                        Text { text: "SHIFT LIGHTS"; color: Theme.text3; font-family: Theme.display-font; font-size: 11px; letter-spacing: 1.2px; }
+                        HorizontalLayout { spacing: 3px; height: 16px;
+                            for l in ShiftCfg.leds: Rectangle { background: l.col; border-radius: 3px; } }
+                        Mono { text: ShiftCfg.redline-rpm + " rpm redline"; color: Theme.text2; font-size: 13px; }
+                        Rectangle { }
+                    }
+                }
+                QuickCard {
+                    clicked => { AppState.page = Page.cars; }
+                    VerticalLayout { padding: 16px; spacing: 6px;
+                        Text { text: "ACTIVE CAR"; color: Theme.text3; font-family: Theme.display-font; font-size: 11px; letter-spacing: 1.2px; }
+                        Text { text: ShiftCfg.car-name; color: Theme.text; font-family: Theme.display-font; font-size: 17px; font-weight: 700; }
+                        Text { text: ShiftCfg.car-game; color: Theme.text2; font-size: 13px; }
+                        Rectangle { }
+                        Mono { text: ShiftCfg.redline-rpm + " rpm"; color: Theme.accent-soft; font-size: 13px; }
+                    }
+                }
+                QuickCard {
+                    clicked => { AppState.page = Page.firmware; }
+                    VerticalLayout { padding: 16px; spacing: 8px;
+                        Text { text: "FIRMWARE"; color: Theme.text3; font-family: Theme.display-font; font-size: 11px; letter-spacing: 1.2px; }
+                        Mono { text: Firmware.current; color: Theme.text; font-size: 15px; }
+                        HorizontalLayout { spacing: 7px;
+                            Dot { tint: Telemetry.connected ? Theme.green : Theme.text3; }
+                            Text { text: Telemetry.connected ? "Telemetry live" : "Idle"; color: Theme.text2; font-size: 13px; vertical-alignment: center; }
+                        }
+                        Rectangle { }
+                    }
+                }
+            }
+            Rectangle { height: 8px; }
+        }
+    }
+}

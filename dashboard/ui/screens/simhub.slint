@@ -1,0 +1,194 @@
+// SimHub Custom Serial builder (new). Pick the telemetry fields the device needs;
+// generates the SimHub "Update Message" expression to paste into a Custom Serial
+// device. Disabled fields emit '0' so the frame keeps its fixed field order.
+import { Theme } from "../theme.slint";
+import { SimHub, SimField } from "../models.slint";
+import { Card, PrimaryButton, GhostButton, ToggleSwitch, SectionLabel, Mono } from "../widgets.slint";
+import { LineEdit, Button } from "std-widgets.slint";
+
+export component SimHubScreen inherits Rectangle {
+    VerticalLayout {
+        padding: 24px;
+        spacing: 16px;
+        HorizontalLayout {
+            VerticalLayout {
+                alignment: center;
+                spacing: 3px;
+                Text { text: "SimHub Setup"; color: Theme.text; font-family: Theme.display-font; font-size: 24px; font-weight: 700; }
+                Text { text: "Build the Custom Serial output that feeds the device's data port"; color: Theme.text3; font-size: 13px; }
+            }
+            Rectangle { }
+        }
+
+        HorizontalLayout {
+            spacing: 18px;
+            // fields
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 12px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    VerticalLayout { alignment: center; SectionLabel { text: "DATA FIELDS"; } }
+                    VerticalLayout {
+                        alignment: center;
+                        Mono {
+                            text: SimHub.query != "" ? ("showing " + SimHub.fields.length + " of " + SimHub.total-fields) : (SimHub.total-fields + " fields");
+                            color: Theme.text3; font-size: 11px;
+                        }
+                    }
+                    Rectangle { }
+                    search := LineEdit {
+                        placeholder-text: "Search fields…";
+                        width: 240px;
+                        text: SimHub.query;
+                        edited(t) => { SimHub.set-query(t); }
+                    }
+                }
+                Card {
+                    vertical-stretch: 1;   // absorb spare height so rows/inputs don't stretch
+                    Flickable {
+                        VerticalLayout {
+                            alignment: start;   // pin rows to the top at their natural height
+                            padding: 8px;
+                            spacing: 4px;
+                            if SimHub.fields.length == 0: Rectangle {
+                                height: 60px;
+                                Text {
+                                    text: "No fields match \"" + SimHub.query + "\"";
+                                    color: Theme.text3; font-size: 13px;
+                                    horizontal-alignment: center; vertical-alignment: center;
+                                }
+                            }
+                            for f in SimHub.fields: Rectangle {
+                                height: 46px;
+                                background: f.enabled ? Theme.panel2 : transparent;
+                                border-radius: 7px;
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 12px;
+                                    spacing: 10px;
+                                    // name + expression, left-aligned, takes all spare width
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: 1px;
+                                        horizontal-stretch: 1;
+                                        Text { text: f.label; color: f.enabled ? Theme.text : Theme.text3; font-size: 13px; font-weight: 500; horizontal-alignment: left; }
+                                        Mono { text: f.expr; color: Theme.text3; font-size: 10px; }
+                                    }
+                                    // remove (custom fields only)
+                                    if !f.builtin: VerticalLayout {
+                                        alignment: center;
+                                        rmta := TouchArea {
+                                            width: 20px;
+                                            Text { text: "✕"; color: rmta.has-hover ? Theme.red : Theme.text3; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                                            clicked => { SimHub.remove-field(f.id); }
+                                        }
+                                    }
+                                    // toggle, right-aligned
+                                    VerticalLayout {
+                                        alignment: center;
+                                        ToggleSwitch { on: f.enabled; toggled(v) => { SimHub.toggle-field(f.id, v); } }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // add a custom field
+                Card {
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+                        SectionLabel { text: "ADD CUSTOM FIELD"; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            name-in := LineEdit { placeholder-text: "Label"; width: 130px; }
+                            expr-in := LineEdit { placeholder-text: "SimHub expression, e.g. format([Gear],'0')"; horizontal-stretch: 1; }
+                            Button {
+                                text: "Add";
+                                clicked => {
+                                    SimHub.add-field(name-in.text, expr-in.text);
+                                    name-in.text = "";
+                                    expr-in.text = "";
+                                }
+                            }
+                        }
+                        Text { text: "Custom fields append to the end of the message (after the device's known fields)."; color: Theme.text3; font-size: 11px; wrap: word-wrap; }
+                    }
+                }
+            }
+            // generated expression
+            VerticalLayout {
+                width: 420px;
+                spacing: 12px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    VerticalLayout { alignment: center; SectionLabel { text: "UPDATE MESSAGE"; } }
+                    Rectangle { }
+                    if SimHub.copy-status != "": VerticalLayout { alignment: center; Mono { text: SimHub.copy-status; color: Theme.green; font-size: 11px; } }
+                    VerticalLayout { alignment: center; GhostButton { text: "⧉ Copy"; clicked => { SimHub.copy-generated(); } } }
+                    VerticalLayout { alignment: center; Mono { text: SimHub.baud + " baud"; color: Theme.text3; font-size: 12px; } }
+                }
+                Card {
+                    height: 240px;
+                    Flickable {
+                        TextInput {
+                            x: 14px; y: 12px;
+                            width: parent.width - 28px;
+                            text: SimHub.generated;
+                            read-only: true;
+                            color: Theme.accent-soft;
+                            font-family: Theme.mono-font;
+                            font-size: 12px;
+                            wrap: char-wrap;
+                            single-line: false;
+                            selection-background-color: Theme.accent-dim;
+                        }
+                    }
+                }
+                // car-model relay — add as a SECOND SimHub update message so the
+                // device knows which car you're in (auto shift-light matching).
+                HorizontalLayout {
+                    spacing: 10px;
+                    VerticalLayout { alignment: center; SectionLabel { text: "CAR MODEL MESSAGE (2ND UPDATE MESSAGE)"; } }
+                    Rectangle { }
+                    VerticalLayout { alignment: center; GhostButton { text: "⧉ Copy"; clicked => { SimHub.copy-car-message(); } } }
+                }
+                Card {
+                    height: 44px;
+                    Flickable {
+                        TextInput {
+                            x: 14px; y: 12px;
+                            width: parent.width - 28px;
+                            text: SimHub.car-message;
+                            read-only: true;
+                            color: Theme.accent-soft;
+                            font-family: Theme.mono-font;
+                            font-size: 12px;
+                            single-line: true;
+                            selection-background-color: Theme.accent-dim;
+                        }
+                    }
+                }
+                Card {
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 8px;
+                        SectionLabel { text: "HOW TO USE"; }
+                        for step in [
+                            "1. SimHub → Additional plugins → Custom Serial device",
+                            "2. Set the COM port to the device's DATA port",
+                            "3. Baud 115200, paste the message above into 'Update Messages'",
+                            "4. The device parses these ';'-separated fields in order" ]: HorizontalLayout {
+                            spacing: 8px;
+                            Text { text: "▹"; color: Theme.accent; font-size: 13px; }
+                            Text { text: step; color: Theme.text2; font-size: 12px; wrap: word-wrap; }
+                        }
+                    }
+                }
+                Text { text: "Select the expression above and copy (Ctrl+C)."; color: Theme.text3; font-size: 11px; }
+                Rectangle { }
+            }
+        }
+    }
+}

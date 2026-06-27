@@ -1,0 +1,343 @@
+// Race Screen layout editor — the layout language in action (HANDOFF.md §3).
+// Presets apply zone configs; modules drag-reorder by their left handle, toggle,
+// add from a per-zone palette, and the live 320×240 mirror reflects every change.
+import { Theme } from "../theme.slint";
+import { RaceLayout, Telemetry, PresetCard, LayoutZone, ZoneModule, ModuleDef, RuleRow, DeviceCaps } from "../models.slint";
+import { Card, PrimaryButton, GhostButton, ToggleSwitch, SectionLabel, Dot } from "../widgets.slint";
+import { DeviceScreen } from "../components/device-screen.slint";
+import { ComboBox, LineEdit, Button, Slider } from "std-widgets.slint";
+
+// One draggable module row inside a zone.
+component ModuleRow inherits Rectangle {
+    in property <string> zone-key;
+    in property <int> index;
+    in property <ZoneModule> mod;
+    property <length> rh: 38px;
+    height: rh;
+    property <bool> selected: RaceLayout.sel-id == root.mod.id;
+    background: drag.pressed ? Theme.elev : (root.selected ? Theme.elev : Theme.panel2);
+    border-radius: 7px;
+    border-width: (drag.pressed || root.selected) ? 1px : 0px;
+    border-color: Theme.accent;
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 10px;
+        spacing: 8px;
+        // drag handle (left)
+        drag := TouchArea {
+            width: 22px;
+            property <length> anchor;
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down) { self.anchor = self.mouse-y; RaceLayout.dragging = true; }
+                if (e.kind == PointerEventKind.up) { RaceLayout.dragging = false; }
+            }
+            moved => {
+                if (self.mouse-y - self.anchor > root.rh) {
+                    RaceLayout.move-module(root.zone-key, root.index, root.index + 1);
+                    self.anchor += root.rh;
+                }
+                if (self.mouse-y - self.anchor < -root.rh) {
+                    RaceLayout.move-module(root.zone-key, root.index, root.index - 1);
+                    self.anchor -= root.rh;
+                }
+            }
+            Text { text: "⠿"; color: Theme.text3; font-size: 15px; horizontal-alignment: center; vertical-alignment: center; }
+        }
+        // name (left aligned) — click to select for editing
+        Rectangle {
+            horizontal-stretch: 1;
+            HorizontalLayout {
+                Text {
+                    text: root.mod.name;
+                    color: root.mod.enabled ? Theme.text : Theme.text3;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+            }
+            TouchArea { clicked => { RaceLayout.select-module(root.zone-key, root.mod.id); } }
+        }
+        // remove
+        TouchArea {
+            width: 18px;
+            Text { text: "✕"; color: rm.has-hover ? Theme.red : Theme.text3; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+            rm := TouchArea { clicked => { RaceLayout.remove-module(root.zone-key, root.mod.id); } }
+        }
+        // toggle (right aligned, fixed width so all toggles line up)
+        VerticalLayout {
+            alignment: center;
+            width: 34px;
+            ToggleSwitch { on: root.mod.enabled; toggled(v) => { RaceLayout.toggle-module(root.zone-key, root.mod.id, v); } }
+        }
+    }
+}
+
+// A zone card with header (+ add) and its module rows.
+component ZoneCard inherits Card {
+    in property <LayoutZone> zone;
+    in property <bool> flip-up: false;     // open the add-popup upward (bottom zones)
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+        HorizontalLayout {
+            Text { text: root.zone.title; color: Theme.text2; font-family: Theme.display-font; font-size: 12px; font-weight: 600; letter-spacing: 1px; vertical-alignment: center; }
+            Rectangle { }
+            // add-module
+            add-btn := Rectangle {
+                width: 22px;
+                height: 18px;
+                border-radius: 5px;
+                background: addta.has-hover ? Theme.elev : Theme.panel2;
+                Text { text: "+"; color: Theme.accent; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
+                addta := TouchArea { clicked => { pop.show(); } }
+                pop := PopupWindow {
+                    x: add-btn.width - 210px;
+                    y: root.flip-up ? -252px : add-btn.height + 4px;
+                    width: 210px;
+                    height: 248px;
+                    Rectangle {
+                        background: Theme.elev;
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: Theme.line2;
+                        Flickable {
+                            viewport-height: cat-col.preferred-height;
+                            cat-col := VerticalLayout {
+                                padding: 6px;
+                                for md in RaceLayout.catalog: Rectangle {
+                                    height: 26px;
+                                    border-radius: 5px;
+                                    background: optta.has-hover ? Theme.panel : transparent;
+                                    HorizontalLayout {
+                                        padding-left: 10px;
+                                        padding-right: 10px;
+                                        alignment: start;
+                                        Text { text: md.name; color: Theme.text2; font-size: 12px; vertical-alignment: center; }
+                                    }
+                                    optta := TouchArea { clicked => { RaceLayout.add-module(root.zone.key, md.type); } }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for m[i] in root.zone.modules: ModuleRow {
+            zone-key: root.zone.key;
+            index: i;
+            mod: m;
+        }
+        if root.zone.modules.length == 0: Text { text: "empty — add a module"; color: Theme.text3; font-size: 12px; }
+    }
+}
+
+// Edit panel for the selected module: field binding, label, format, color rules.
+component EditPanel inherits Card {
+    VerticalLayout {
+        padding: 12px;
+        spacing: 7px;
+        HorizontalLayout {
+            Text { text: "EDIT MODULE"; color: Theme.text2; font-family: Theme.display-font; font-size: 12px; font-weight: 600; letter-spacing: 1px; vertical-alignment: center; }
+            Rectangle { }
+            Text { text: RaceLayout.edit.kind; color: Theme.accent; font-family: Theme.mono-font; font-size: 11px; vertical-alignment: center; }
+        }
+        Text { text: "KIND"; color: Theme.text3; font-size: 10px; letter-spacing: 0.5px; }
+        ComboBox { model: RaceLayout.kind-options; current-index: RaceLayout.edit.kind-idx; selected(v) => { RaceLayout.set-mod-kind(v); } }
+        Text { text: "DATA FIELD"; color: Theme.text3; font-size: 10px; letter-spacing: 0.5px; }
+        ComboBox { model: RaceLayout.field-options; current-index: RaceLayout.edit.field-idx; selected(v) => { RaceLayout.set-mod-field(v); } }
+        HorizontalLayout {
+            spacing: 8px;
+            VerticalLayout { spacing: 3px; horizontal-stretch: 1;
+                Text { text: "LABEL"; color: Theme.text3; font-size: 10px; }
+                LineEdit { text: RaceLayout.edit.label; edited(t) => { RaceLayout.set-mod-label(t); } }
+            }
+            VerticalLayout { spacing: 3px; width: 88px;
+                Text { text: "UNIT"; color: Theme.text3; font-size: 10px; }
+                LineEdit { text: RaceLayout.edit.unit; edited(t) => { RaceLayout.set-mod-unit(t); } }
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            VerticalLayout { spacing: 3px; horizontal-stretch: 1;
+                Text { text: "FORMAT"; color: Theme.text3; font-size: 10px; }
+                ComboBox { model: RaceLayout.fmt-options; current-index: RaceLayout.edit.fmt-idx; selected(v) => { RaceLayout.set-mod-fmt(v); } }
+            }
+            VerticalLayout { spacing: 3px; horizontal-stretch: 1;
+                Text { text: "BASE COLOR"; color: Theme.text3; font-size: 10px; }
+                ComboBox { model: RaceLayout.palette-options; current-index: RaceLayout.edit.base-idx; selected(v) => { RaceLayout.set-mod-base(v); } }
+            }
+        }
+        VerticalLayout { spacing: 3px;
+            Text { text: "TEXT SIZE %  (0 = auto-fit to box)"; color: Theme.text3; font-size: 10px; }
+            LineEdit { text: "\{RaceLayout.edit.size}"; input-type: number; edited(t) => { RaceLayout.set-mod-size(t.to-float()); } }
+        }
+        HorizontalLayout {
+            Text { text: "COLOR RULES"; color: Theme.text3; font-size: 10px; letter-spacing: 0.5px; vertical-alignment: center; }
+            Rectangle { }
+            Button { text: "+ rule"; clicked => { RaceLayout.add-rule(); } }
+        }
+        for r[i] in RaceLayout.edit-rules: HorizontalLayout {
+            spacing: 6px;
+            ComboBox { width: 60px; model: ["<", "<=", "==", ">=", ">"]; current-index: r.op-idx; selected(v) => { RaceLayout.set-rule(i, v, "\{r.v}", r.color); } }
+            LineEdit { width: 62px; text: "\{r.v}"; input-type: number; edited(t) => { RaceLayout.set-rule(i, r.op, t, r.color); } }
+            ComboBox { horizontal-stretch: 1; model: RaceLayout.palette-options; current-index: r.color-idx; selected(v) => { RaceLayout.set-rule(i, r.op, "\{r.v}", v); } }
+            Button { text: "✕"; clicked => { RaceLayout.remove-rule(i); } }
+        }
+    }
+}
+
+export component RaceScreen inherits Rectangle {
+    property <float> zoom: 1.0;     // preview zoom (1.0 = fit to stage)
+    VerticalLayout {
+        padding: 24px;
+        spacing: 16px;
+        // header
+        HorizontalLayout {
+            VerticalLayout {
+                alignment: center;
+                spacing: 3px;
+                Text { text: "Race Screen Layout"; color: Theme.text; font-family: Theme.display-font; font-size: 24px; font-weight: 700; }
+                Text { text: "Editing Main display · " + RaceLayout.main-res + " · live mirror"; color: Theme.text3; font-size: 13px; }
+            }
+            Rectangle { }
+            HorizontalLayout {
+                spacing: 10px;
+                VerticalLayout { alignment: center;
+                    if RaceLayout.dirty: Text { text: "unsaved"; color: Theme.amber; font-size: 12px; horizontal-alignment: right; }
+                    if !RaceLayout.dirty && RaceLayout.save-status != "": Text {
+                        text: RaceLayout.save-status;
+                        color: (RaceLayout.save-status == "Not connected" || RaceLayout.save-status == "Device rejected — update firmware") ? Theme.red : Theme.green;
+                        font-size: 12px; horizontal-alignment: right;
+                    }
+                }
+                GhostButton { text: "READ FROM DEVICE"; clicked => { RaceLayout.read-device(); } }
+                GhostButton { text: "SAVE PRESET"; clicked => { RaceLayout.update-preset(); } }
+                PrimaryButton { text: "SAVE TO DEVICE"; clicked => { RaceLayout.save(); } }
+            }
+        }
+        // preset rail (scrollable)
+        Rectangle {
+            height: 76px;
+            preset-flick := Flickable {
+                viewport-width: preset-row.preferred-width;
+                viewport-height: self.height;
+                preset-row := HorizontalLayout {
+                    spacing: 12px;
+                    for p[i] in RaceLayout.presets: Rectangle {
+                        width: 168px;
+                        background: p.active ? Theme.accent-dim : Theme.panel;
+                        border-radius: 10px;
+                        border-width: 1px;
+                        border-color: p.active ? Theme.accent : Theme.line;
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 4px;
+                            alignment: center;
+                            HorizontalLayout {
+                                Text { text: p.name; color: p.active ? Theme.accent : Theme.text; font-family: Theme.display-font; font-size: 16px; font-weight: 700; }
+                                Rectangle { }
+                                if !p.builtin: TouchArea {
+                                    width: 16px;
+                                    Text { text: "✕"; color: delx.has-hover ? Theme.red : Theme.text3; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                                    delx := TouchArea { clicked => { RaceLayout.delete-preset(i); } }
+                                }
+                            }
+                            Text { text: p.summary; color: Theme.text3; font-size: 11px; overflow: elide; }
+                        }
+                        TouchArea { clicked => { RaceLayout.select-preset(i); } }
+                    }
+                    // new preset (dashed)
+                    Rectangle {
+                        width: 140px;
+                        border-radius: 10px;
+                        border-width: 1px;
+                        border-color: Theme.line2;
+                        Text { text: "+ New preset"; color: Theme.text3; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
+                        TouchArea { clicked => { RaceLayout.new-preset("Custom " + (RaceLayout.presets.length + 1)); } }
+                    }
+                }
+            }
+        }
+        // split body
+        HorizontalLayout {
+            spacing: 18px;
+            // live preview stage
+            Rectangle {
+                horizontal-stretch: 1;
+                background: @radial-gradient(circle, #14171c 0%, #0a0b0d 70%);
+                border-radius: 12px;
+                border-width: 1px;
+                border-color: Theme.line;
+                VerticalLayout {
+                    padding: 22px;
+                    spacing: 12px;
+                    HorizontalLayout {
+                        spacing: 10px;
+                        HorizontalLayout {
+                            spacing: 7px;
+                            Dot { tint: Telemetry.connected ? Theme.green : Theme.text3; }
+                            Text { text: Telemetry.connected ? "LIVE · " + Telemetry.game : "IDLE"; color: Theme.text2; font-family: Theme.display-font; font-size: 11px; letter-spacing: 1px; vertical-alignment: center; }
+                        }
+                        Rectangle { }
+                        // zoom control
+                        Text { text: "ZOOM"; color: Theme.text3; font-size: 10px; letter-spacing: 1px; vertical-alignment: center; }
+                        Slider { width: 150px; minimum: 0.5; maximum: 2.5; value: root.zoom; changed(v) => { root.zoom = v; } }
+                        Text { text: Math.round(root.zoom * 100) + "%"; color: Theme.text2; font-family: Theme.mono-font; font-size: 11px; vertical-alignment: center; }
+                        Rectangle { width: 12px; }
+                        Text { text: DeviceCaps.main-res; color: Theme.text3; font-family: Theme.mono-font; font-size: 11px; vertical-alignment: center; }
+                    }
+                    // live mirror — fit to stage, then * zoom; pan with the Flickable when zoomed in
+                    stage := Rectangle {
+                        vertical-stretch: 1;
+                        clip: true;
+                        property <float> fit: min(1.0, min((self.width - 24px) / (DeviceCaps.main-w * 1px), (self.height - 24px) / (DeviceCaps.main-h * 1px))) * root.zoom;
+                        Flickable {
+                            viewport-width: max(stage.width, DeviceCaps.main-w * 1px * stage.fit + 24px);
+                            viewport-height: max(stage.height, DeviceCaps.main-h * 1px * stage.fit + 24px);
+                            Rectangle {
+                                width: DeviceCaps.main-w * 1px * stage.fit + 12px;
+                                height: DeviceCaps.main-h * 1px * stage.fit + 12px;
+                                x: 0;
+                                y: 0;
+                                drop-shadow-blur: 18px;
+                                drop-shadow-color: #000000;
+                                background: #000000;
+                                border-radius: 16px;
+                                DeviceScreen {
+                                    x: 6px;
+                                    y: 6px;
+                                    width: parent.width - 12px;
+                                    height: parent.height - 12px;
+                                    mode: 0;
+                                }
+                            }
+                        }
+                    }
+                    Text { text: "Edits on the right apply to the mirror instantly · drag ⠿ to reorder · zoom to inspect."; color: Theme.text3; font-size: 12px; horizontal-alignment: center; }
+                }
+            }
+            // layout zones panel
+            VerticalLayout {
+                width: 360px;
+                spacing: 12px;
+                HorizontalLayout {
+                    VerticalLayout { alignment: center; SectionLabel { text: "LAYOUT ZONES"; } }
+                    Rectangle { }
+                    VerticalLayout { alignment: center; Text { text: "drag ⠿ · toggle · + add"; color: Theme.text3; font-size: 11px; } }
+                }
+                Flickable {
+                    vertical-stretch: 1;
+                    viewport-height: zone-col.preferred-height;
+                    interactive: !RaceLayout.dragging;   // don't scroll while reordering a module
+                    zone-col := VerticalLayout {
+                        spacing: 12px;
+                        alignment: start;          // keep zones pinned to the top on resize
+                        for z[i] in RaceLayout.zones: ZoneCard { zone: z; flip-up: i >= 3; }
+                    }
+                }
+                if RaceLayout.sel-id != "": EditPanel { }
+            }
+        }
+    }
+}

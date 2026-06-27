@@ -1,0 +1,251 @@
+// The simulated device panel. Race mode is fully data-driven: C++ resolves each
+// module (value text + color) from the SAME field registry + format_common +
+// palette the firmware uses, and pushes RaceLayout.render-zones. This preview
+// renders those resolved modules in the device's own fonts (FreeMono/FreeSans),
+// so it is WYSIWYG with the hardware.
+import { Theme } from "../theme.slint";
+import { Telemetry, ShiftCfg, RaceLayout, DashButton, ResolvedModule, ResolvedZone } from "../models.slint";
+
+// One LED of the live shift strip.
+component MiniStrip inherits HorizontalLayout {
+    in property <bool> blink: false;
+    property <length> u: root.height;
+    spacing: u * 0.18;
+    for l[i] in ShiftCfg.leds: Rectangle {
+        property <bool> lit: Telemetry.rpm >= Telemetry.redline * l.threshold / 100;
+        property <bool> redzone: l.threshold >= 90;
+        border-radius: u * 0.24;
+        background: lit ? l.col : #15171c;
+        opacity: lit && redzone && Telemetry.redline-active && root.blink ? 0.15 : 1.0;
+    }
+}
+
+// Small "LABEL / value" stat, in the device fonts. The value size mirrors the
+// device's zone-aware auto-fit: narrow rails render smaller; an explicit
+// size-pct (the design-language font size) overrides.
+component Stat inherits VerticalLayout {
+    in property <string> label;
+    in property <string> value;
+    in property <color> value-col: Theme.text;
+    in property <length> u: 40px;
+    in property <bool> narrow: false;
+    in property <int> size-pct: 0;
+    alignment: center;
+    spacing: u * 0.04;
+    Text { text: root.label; color: Theme.text3; font-family: Theme.device-display; font-size: u * 0.18; letter-spacing: 0.5px; horizontal-alignment: center; overflow: elide; }
+    Text {
+        text: root.value;
+        color: root.value-col;
+        font-family: Theme.device-mono;
+        font-size: root.size-pct > 0 ? u * root.size-pct / 100 : (root.narrow ? u * 0.30 : u * 0.42);
+        horizontal-alignment: center;
+        overflow: elide;
+    }
+}
+
+// Render a single RESOLVED module by its kind, filling its box.
+component ModuleView inherits Rectangle {
+    in property <ResolvedModule> rm;
+    in property <bool> blink: false;
+    in property <bool> narrow: false;     // left/right rails render values smaller
+    property <length> u: root.height;
+
+    if rm.kind == "stat" || rm.kind == "position": Stat { u: root.u; label: rm.label; value: rm.value; value-col: rm.value-col; narrow: root.narrow; size-pct: rm.size; }
+
+    if rm.kind == "bar": VerticalLayout {
+        alignment: center; spacing: u * 0.1;
+        Text { text: rm.label; color: Theme.text3; font-family: Theme.device-display; font-size: u * 0.18; horizontal-alignment: center; }
+        Rectangle { height: u * 0.28; background: Theme.panel; border-radius: u * 0.06;
+            Rectangle { x: 0; width: parent.width * rm.pct / 100; height: parent.height; background: rm.value-col; border-radius: u * 0.06; } }
+    }
+
+    if rm.kind == "gearSpeed": VerticalLayout {
+        alignment: center;
+        spacing: u * 0.02;
+        Text { text: Telemetry.gear; color: Theme.text; font-family: Theme.device-display; font-weight: 700; font-size: u * 0.31; horizontal-alignment: center; }
+        Text { text: Telemetry.speed; color: Theme.text; font-family: Theme.device-mono; font-size: u * 0.24; horizontal-alignment: center; }
+        Text { text: Telemetry.speed-unit; color: Theme.text3; font-family: Theme.device-display; font-size: u * 0.09; horizontal-alignment: center; }
+    }
+    if rm.kind == "gear": Text { text: Telemetry.gear; color: Theme.text; font-family: Theme.device-display; font-weight: 700; font-size: u * 0.78; horizontal-alignment: center; vertical-alignment: center; }
+
+    if rm.kind == "rpmStrip": VerticalLayout { alignment: center; MiniStrip { height: u * 0.5; blink: root.blink; } }
+
+    if rm.kind == "lapPair": VerticalLayout { alignment: start; spacing: u * 0.02;
+        Stat { u: root.u * 0.5; label: "CURRENT"; value: Telemetry.cur-lap; narrow: root.narrow; size-pct: rm.size > 0 ? rm.size : 80; }
+        Stat { u: root.u * 0.5; label: "BEST"; value: Telemetry.best-lap; value-col: Theme.accent-soft; narrow: root.narrow; size-pct: rm.size > 0 ? rm.size : 80; }
+    }
+
+    if rm.kind == "tcDual": HorizontalLayout { alignment: center; spacing: u * 0.1;
+        Stat { u: root.u; label: "TC"; value: Telemetry.tc; narrow: true; size-pct: rm.size; }
+        Stat { u: root.u; label: "ABS"; value: Telemetry.abs; narrow: true; size-pct: rm.size; }
+    }
+
+    if rm.kind == "tyreGrid": VerticalLayout {
+        alignment: center; spacing: u * 0.06;
+        for row in [0, 1]: HorizontalLayout {
+            spacing: u * 0.06;
+            for col in [0, 1]: Rectangle {
+                property <int> idx: row * 2 + col;
+                background: Telemetry.tyres[idx].col.with-alpha(0.20);
+                border-width: 1px;
+                border-color: Telemetry.tyres[idx].col.with-alpha(0.55);
+                border-radius: u * 0.07;
+                Text { text: Telemetry.tyres[idx].temp + "°"; color: Telemetry.tyres[idx].col; font-family: Theme.device-mono; font-size: u * 0.13; horizontal-alignment: center; vertical-alignment: center; }
+            }
+        }
+    }
+
+    if rm.kind == "sectors": HorizontalLayout { alignment: center; spacing: u * 0.06;
+        for s in ["S1", "S2", "S3"]: Rectangle { background: Theme.panel; border-radius: u * 0.06;
+            Text { text: s; color: Theme.text3; font-family: Theme.device-mono; font-size: u * 0.16; horizontal-alignment: center; vertical-alignment: center; } }
+    }
+
+    if rm.kind == "map": Rectangle {
+        Rectangle { width: u * 0.7; height: u * 0.7; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; border-radius: self.width/2; border-width: 1px; border-color: Theme.text3; background: transparent;
+            Rectangle { width: u * 0.14; height: u * 0.14; border-radius: self.width/2; background: Theme.accent; x: parent.width * 0.7; y: parent.height * 0.2; } }
+    }
+
+    if rm.kind == "flag": Rectangle { background: rm.value-col; border-radius: u * 0.1; }
+}
+
+export component DeviceScreen inherits Rectangle {
+    in property <int> mode: 0;            // 0 race, 1 buttons
+    in property <[DashButton]> buttons: [];
+    in property <int> page-index: 0;
+    in property <[int]> page-list: [0, 1, 2];   // page indices for the tab row
+    in property <int> sel-tile: -1;
+    callback tile-clicked(int);
+    callback page-clicked(int);
+    property <length> H: root.height;
+
+    background: Theme.device;
+    border-radius: Theme.radius-device;
+    clip: true;
+
+    blink-timer := Timer {
+        interval: max(60ms, 1s / (ShiftCfg.blink-hz * 2));
+        running: Telemetry.redline-active;
+        triggered => { blink = !blink; }
+    }
+    property <bool> blink: false;
+
+    // ===== RACE MODE (resolved-module driven) =====
+    if root.mode == 0: VerticalLayout {
+        padding: H * 0.05;
+        spacing: H * 0.03;
+        // TOP STRIP
+        Rectangle {
+            height: H * 0.16;
+            for z in RaceLayout.render-zones: Rectangle {
+                visible: z.key == "topStrip";
+                HorizontalLayout {
+                    spacing: H * 0.03;
+                    for m in z.modules: ModuleView { rm: m; blink: root.blink; visible: m.enabled; horizontal-stretch: m.enabled ? 1 : 0; }
+                }
+            }
+        }
+        // MIDDLE: left | center | right
+        HorizontalLayout {
+            spacing: H * 0.03;
+            vertical-stretch: 1;
+            Rectangle {
+                width: parent.width * 0.24;
+                for z in RaceLayout.render-zones: Rectangle {
+                    visible: z.key == "leftRail";
+                    VerticalLayout {
+                        spacing: H * 0.04;
+                        for m in z.modules: ModuleView { rm: m; narrow: true; visible: m.enabled; vertical-stretch: m.enabled ? 1 : 0; }
+                    }
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+                for z in RaceLayout.render-zones: Rectangle {
+                    visible: z.key == "center";
+                    VerticalLayout {
+                        spacing: H * 0.03;
+                        for m in z.modules: ModuleView { rm: m; blink: root.blink; visible: m.enabled; vertical-stretch: m.enabled ? 1 : 0; }
+                    }
+                }
+            }
+            Rectangle {
+                width: parent.width * 0.24;
+                for z in RaceLayout.render-zones: Rectangle {
+                    visible: z.key == "rightRail";
+                    VerticalLayout {
+                        spacing: H * 0.04;
+                        for m in z.modules: ModuleView { rm: m; narrow: true; visible: m.enabled; vertical-stretch: m.enabled ? 1 : 0; }
+                    }
+                }
+            }
+        }
+        // BOTTOM
+        Rectangle {
+            height: H * 0.12;
+            for z in RaceLayout.render-zones: Rectangle {
+                visible: z.key == "bottom";
+                HorizontalLayout {
+                    spacing: H * 0.03;
+                    for m in z.modules: ModuleView { rm: m; visible: m.enabled; horizontal-stretch: m.enabled ? 1 : 0; }
+                }
+            }
+        }
+    }
+
+    // ===== BUTTON-PAGE MODE =====
+    if root.mode == 1: VerticalLayout {
+        padding: H * 0.05;
+        spacing: H * 0.05;
+        HorizontalLayout {
+            spacing: H * 0.04;
+            for i in root.page-list: Rectangle {
+                background: i == root.page-index ? Theme.accent-dim : Theme.panel;
+                border-radius: H * 0.03;
+                border-width: 1px;
+                border-color: i == root.page-index ? Theme.accent : Theme.line;
+                height: H * 0.1;
+                Text {
+                    text: "P" + (i + 1);
+                    color: i == root.page-index ? Theme.accent : Theme.text3;
+                    font-family: Theme.display-font;
+                    font-size: H * 0.045;
+                    letter-spacing: 1px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                TouchArea { clicked => { root.page-clicked(i); } }
+            }
+        }
+        for r in [0, 1]: HorizontalLayout {
+            spacing: H * 0.04;
+            for c in [0, 1, 2]: Rectangle {
+                property <int> idx: r * 3 + c;
+                property <DashButton> b: root.buttons[idx];
+                property <bool> selected: root.sel-tile == idx;
+                property <bool> lit: b.is-toggle && b.is-on;
+                // Toggles always carry their colour so they read as stateful: a dim
+                // tint when off, fully filled when on. Momentary push tiles stay panel.
+                background: lit ? b.active-col
+                    : (b.is-toggle ? b.active-col.with-alpha(0.22) : Theme.panel2);
+                border-radius: H * 0.04;
+                border-width: selected ? 2px : 1px;
+                border-color: selected ? Theme.accent : b.active-col;
+                TouchArea { clicked => { root.tile-clicked(idx); } }
+                VerticalLayout {
+                    padding: H * 0.03;
+                    alignment: center;
+                    Text {
+                        text: b.label;
+                        color: lit ? Theme.device : b.active-col;
+                        font-family: Theme.display-font;
+                        font-size: H * 0.07;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+    }
+}

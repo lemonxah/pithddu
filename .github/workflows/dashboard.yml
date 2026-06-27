@@ -1,0 +1,82 @@
+name: dashboard
+
+on:
+  push:
+    branches: [main]
+    tags: ['dashboard-v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libudev-dev libhidapi-dev \
+            libfontconfig1-dev libfreetype6-dev libxkbcommon-dev \
+            libwayland-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libgl1-mesa-dev libegl1-mesa-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Shared pure-logic core (also exercised here, since it's a host workspace member).
+      - name: Test pith-core
+        run: cargo test -p pith-core
+
+      - name: Derive version
+        id: ver
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/dashboard-v* ]]; then
+            echo "v=${GITHUB_REF#refs/tags/dashboard-v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "v=0.0.0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set package version
+        run: sed -i -E "0,/^version = \".*\"/s//version = \"${{ steps.ver.outputs.v }}\"/" dashboard/Cargo.toml
+
+      - name: Build
+        run: cargo build --release -p pith-dashboard
+
+      - name: Bundle (single self-contained binary)
+        run: |
+          mkdir -p pith-dashboard-linux-x86_64
+          cp target/release/pith-dashboard pith-dashboard-linux-x86_64/
+          cp dashboard/pith-dashboard.desktop dashboard/icon.png dashboard/install-desktop.sh dashboard/99-pithddu.rules pith-dashboard-linux-x86_64/ || true
+          tar -czf pith-dashboard-linux-x86_64.tar.gz pith-dashboard-linux-x86_64
+
+      - name: Package .deb (best-effort)
+        continue-on-error: true
+        run: |
+          cargo install cargo-deb --locked
+          cargo deb -p pith-dashboard --no-build --output dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pith-dashboard-linux-x86_64
+          path: |
+            pith-dashboard-linux-x86_64.tar.gz
+            dist/*.deb
+          if-no-files-found: error
+
+  release:
+    needs: [host]
+    if: ${{ startsWith(github.ref, 'refs/tags/dashboard-v') && !cancelled() && needs.host.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*.{tar.gz,deb}
+          generate_release_notes: true
+          fail_on_unmatched_files: false
