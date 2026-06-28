@@ -1,26 +1,7 @@
 // Shared structs, enums and global singletons. C++ owns the data and writes
 // these globals; the UI reads them and invokes callbacks for actions.
 
-export enum Page { overview, race, shift, cars, simhub, firmware, device }
-
-// ---- SimHub custom-serial builder ----
-export struct SimField { id: string, label: string, expr: string, enabled: bool, builtin: bool }
-export global SimHub {
-    in-out property <[SimField]> fields: [];   // already filtered by `query` (C++ side)
-    in property <string> generated: "";       // full custom-serial message expression
-    in property <string> car-message: "";      // @CM car-model relay (2nd update message)
-    in property <int> baud: 115200;
-    in property <string> copy-status: "";      // transient feedback after a copy
-    in-out property <string> query: "";        // filter the field list (find dupes before adding)
-    in property <int> total-fields: 0;         // unfiltered field count (for "showing N of M")
-    callback set-query(string);
-    callback toggle-field(string /*id*/, bool);
-    callback add-field(string /*label*/, string /*expr*/);
-    callback remove-field(string /*id*/);
-    callback regenerate();
-    callback copy-generated();
-    callback copy-car-message();
-}
+export enum Page { overview, race, shift, cars, firmware, device }
 
 // ---- Telemetry (live device mirror) ----
 export struct TyreCell { temp: int, col: color }

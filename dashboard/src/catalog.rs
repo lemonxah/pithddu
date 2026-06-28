@@ -747,15 +747,3 @@ pub const SIMFIELDS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-pub fn seed_sim(s: &mut State) {
-    s.sim.clear();
-    for (id, label, expr) in SIMFIELDS {
-        s.sim.push(crate::state::SimRow {
-            id: (*id).into(),
-            label: (*label).into(),
-            expr: (*expr).into(),
-            enabled: true,
-            builtin: true,
-        });
-    }
-}

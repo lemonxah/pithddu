@@ -164,14 +164,6 @@ pub struct CarItem {
     pub led_cols: Vec<u32>,
 }
 
-#[derive(Clone)]
-pub struct SimRow {
-    pub id: String,
-    pub label: String,
-    pub expr: String,
-    pub enabled: bool,
-    pub builtin: bool,
-}
 
 #[derive(Clone, Default)]
 pub struct FwRelease {
@@ -262,9 +254,6 @@ pub struct State {
     pub serial_ports: Vec<crate::device::PortInfo>,
     pub releases: Vec<FwRelease>,
 
-    pub sim: Vec<SimRow>,
-    pub sim_uid: i32,
-    pub sim_query: String,
 
     pub device_log: Vec<String>, // firmware logs streamed over HID report id 3
 }
@@ -347,9 +336,6 @@ impl Default for State {
             device_fw: String::new(),
             serial_ports: Vec::new(),
             releases: Vec::new(),
-            sim: Vec::new(),
-            sim_uid: 0,
-            sim_query: String::new(),
             device_log: Vec::new(),
         }
     }

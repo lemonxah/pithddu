@@ -2,7 +2,7 @@ use slint::ComponentHandle;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize};
 use std::sync::{Arc, Mutex};
 
-use crate::catalog::{seed_boards, seed_buttons, seed_presets, seed_shift, seed_sim};
+use crate::catalog::{seed_boards, seed_buttons, seed_presets, seed_shift};
 use crate::ctx::Ctx;
 use crate::device::Dash;
 use crate::firmware::APP_FW_VERSION;
@@ -19,7 +19,6 @@ use crate::ui_bridge::device::push_pins;
 use crate::ui_bridge::firmware::{refresh_firmware_local, refresh_serial_ports};
 use crate::ui_bridge::race::{push_catalog, push_editor_options};
 use crate::ui_bridge::shift::{push_led_model, push_shift_scalars};
-use crate::ui_bridge::simhub::{push_sim_fields, regen_simhub};
 use crate::ui_bridge::{col, model, sstr};
 use crate::{AppWindow, Firmware, FwComponent, Telemetry, TyreCell};
 
@@ -151,7 +150,6 @@ pub fn init(ui: &AppWindow, rt: &tokio::runtime::Runtime) -> Arc<Ctx> {
     load_shift_cfg(&mut s);
     seed_boards(&mut s);
     load_board(&mut s);
-    seed_sim(&mut s);
     rt.block_on(load_manifest_from_cache_or_net(&mut s));
 
     let ctx = Arc::new(Ctx {
@@ -184,8 +182,6 @@ pub fn init(ui: &AppWindow, rt: &tokio::runtime::Runtime) -> Arc<Ctx> {
         push_pins(ui, &st);
         refresh_firmware_local(ui, &st);
         refresh_serial_ports(ui, &mut st);
-        push_sim_fields(ui, &st);
-        regen_simhub(ui, &st);
         push_games(ui, &st);
         push_classes(ui, &mut st);
         rebuild_filtered(&mut st);

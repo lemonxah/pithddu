@@ -14,12 +14,10 @@ use crate::ui_bridge::device::push_pins;
 use crate::ui_bridge::firmware::{refresh_serial_ports, update_release_board_match};
 use crate::ui_bridge::race::{push_edit_module, push_presets};
 use crate::ui_bridge::shift::{pull_shift_scalars, push_led_model};
-use crate::ui_bridge::simhub::{push_sim_fields, regen_simhub};
 use crate::ui_bridge::{refresh_race, sstr, to_u32};
 use crate::util::atoi;
 use crate::{
     AppState, AppWindow, Buttons, CarLib, DeviceCfg, DeviceLog, Firmware, RaceLayout, ShiftCfg,
-    SimHub,
 };
 
 fn mark_dirty(u: &AppWindow, s: &State) {
@@ -1504,89 +1502,6 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
         });
     }
 
-    {
-        let sh = ui.global::<SimHub>();
-        let c = ctx.clone();
-        sh.on_set_query(move |q: SharedString| {
-            if let Some(u) = c.ui.upgrade() {
-                let mut st = c.lock();
-                st.sim_query = q.to_string();
-                push_sim_fields(&u, &st);
-            }
-        });
-        let c = ctx.clone();
-        sh.on_toggle_field(move |id: SharedString, on| {
-            if let Some(u) = c.ui.upgrade() {
-                let mut st = c.lock();
-                for r in st.sim.iter_mut() {
-                    if r.id == id.as_str() {
-                        r.enabled = on;
-                    }
-                }
-                regen_simhub(&u, &st);
-            }
-        });
-        let c = ctx.clone();
-        sh.on_add_field(move |label: SharedString, expr: SharedString| {
-            if label.is_empty() || expr.is_empty() {
-                return;
-            }
-            if let Some(u) = c.ui.upgrade() {
-                let mut st = c.lock();
-                let id = format!("custom{}", st.sim_uid);
-                st.sim_uid += 1;
-                st.sim.push(crate::state::SimRow {
-                    id,
-                    label: label.to_string(),
-                    expr: expr.to_string(),
-                    enabled: true,
-                    builtin: false,
-                });
-                push_sim_fields(&u, &st);
-                regen_simhub(&u, &st);
-            }
-        });
-        let c = ctx.clone();
-        sh.on_remove_field(move |id: SharedString| {
-            if let Some(u) = c.ui.upgrade() {
-                let mut st = c.lock();
-                st.sim.retain(|r| r.builtin || r.id != id.as_str());
-                push_sim_fields(&u, &st);
-                regen_simhub(&u, &st);
-            }
-        });
-        let c = ctx.clone();
-        sh.on_regenerate(move || {
-            if let Some(u) = c.ui.upgrade() {
-                let st = c.lock();
-                regen_simhub(&u, &st);
-            }
-        });
-        let c = ctx.clone();
-        sh.on_copy_generated(move || {
-            if let Some(u) = c.ui.upgrade() {
-                let sh = u.global::<SimHub>();
-                let ok = copy_to_clipboard(sh.get_generated().as_str());
-                sh.set_copy_status(sstr(if ok {
-                    "✓ Copied to clipboard"
-                } else {
-                    "Copy failed (no clipboard tool)"
-                }));
-            }
-        });
-        let c = ctx.clone();
-        sh.on_copy_car_message(move || {
-            if let Some(u) = c.ui.upgrade() {
-                let sh = u.global::<SimHub>();
-                let ok = copy_to_clipboard(sh.get_car_message().as_str());
-                sh.set_copy_status(sstr(if ok {
-                    "✓ Copied car message"
-                } else {
-                    "Copy failed (no clipboard tool)"
-                }));
-            }
-        });
-    }
     let _ = ctx;
 }
 

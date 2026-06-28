@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("PithDdu.SimHubPlugin")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+db861fb7c99f169e6e46ab7aa3adb2f63e74b638")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+04ce113d2ef8c0583ea087b21330c251192bb388")]
 [assembly: System.Reflection.AssemblyProductAttribute("PithDdu.SimHubPlugin")]
 [assembly: System.Reflection.AssemblyTitleAttribute("PithDdu.SimHubPlugin")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

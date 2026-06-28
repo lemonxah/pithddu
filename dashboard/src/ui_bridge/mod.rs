@@ -4,7 +4,6 @@ pub mod device;
 pub mod firmware;
 pub mod race;
 pub mod shift;
-pub mod simhub;
 pub mod telemetry;
 pub mod uidoc;
 
