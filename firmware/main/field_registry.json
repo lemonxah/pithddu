@@ -55,6 +55,8 @@
     { "name": "headlights",      "accessor": "t->headlights",      "fmt": "int",    "sc": 1,    "label": "LIGHTS" },
     { "name": "wipers",          "accessor": "t->wipers",          "fmt": "int",    "sc": 1,    "label": "WIPERS" },
     { "name": "pit_limiter",     "accessor": "t->pit_limiter",     "fmt": "int",    "sc": 1,    "label": "PIT LIM" },
-    { "name": "ignition",        "accessor": "t->ignition",        "fmt": "int",    "sc": 1,    "label": "IGN" }
+    { "name": "ignition",        "accessor": "t->ignition",        "fmt": "int",    "sc": 1,    "label": "IGN" },
+    { "name": "flag",            "accessor": "t->flag",            "fmt": "int",    "sc": 1,    "label": "FLAG" },
+    { "name": "track_pct",       "accessor": "t->track_pct",       "fmt": "int",    "sc": 10,   "label": "TRACK%" }
   ]
 }

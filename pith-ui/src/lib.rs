@@ -19,7 +19,7 @@ use alloc::vec::Vec;
 use embedded_graphics::{
     pixelcolor::Rgb565,
     prelude::*,
-    primitives::{Circle, PrimitiveStyle, Rectangle, RoundedRectangle},
+    primitives::{Circle, Line, PrimitiveStyle, Rectangle, RoundedRectangle},
 };
 use serde::{Deserialize, Serialize};
 use u8g2_fonts::{
@@ -83,6 +83,26 @@ impl Align {
     }
 }
 
+/// Vertical placement of text/content within an element's box.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum VAlign {
+    Top,
+    #[default]
+    Center,
+    Bottom,
+}
+
+impl VAlign {
+    /// The baseline y + u8g2 vertical anchor for a box [y, y+h).
+    fn place(self, y: i32, h: i32) -> (i32, VerticalPosition) {
+        match self {
+            VAlign::Top => (y + 2, VerticalPosition::Top),
+            VAlign::Center => (y + h / 2, VerticalPosition::Center),
+            VAlign::Bottom => (y + h - 2, VerticalPosition::Bottom),
+        }
+    }
+}
+
 /// A colour rule: when `op(value, threshold)` holds, use `color` (first match wins).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct Rule {
@@ -98,15 +118,20 @@ pub enum Kind {
     /// Filled (optionally rounded) background panel.
     Panel { color: Pal, radius: u8 },
     /// Static text.
-    Label { text: String, color: Pal, size: u8, align: Align },
+    Label { text: String, color: Pal, size: u8, align: Align, valign: VAlign },
     /// Caption + a live value formatted via the field registry (overridable).
     Stat { field: u8, label: String, fmt: Option<Fmt>, scale: i32, unit: String, base: Pal, rules: Vec<Rule>, size: u8 },
     /// Horizontal level bar; value/scale -> 0..=100%.
     Bar { field: u8, label: String, scale: i32, base: Pal, rules: Vec<Rule> },
     /// Big gear glyph, optionally with speed below.
     GearSpeed { speed: bool },
-    /// 12-segment rev/shift strip (uses the shared shift-light colours).
-    RpmStrip,
+    /// Rev/shift strip (uses the shared shift-light colours). `count` is the number
+    /// of segments — set to the physically installed rev-LED count so the on-screen
+    /// strip matches the real strip (0 = legacy default of 12).
+    RpmStrip {
+        #[serde(default)]
+        count: u8,
+    },
     /// 2x2 tyre-temperature grid.
     TyreGrid,
     /// TC / ABS levels side by side.
@@ -119,11 +144,35 @@ pub enum Kind {
     Position { label: String },
     /// Solid flag-colour panel (driven by `field` + rules).
     Flag { field: u8, base: Pal, rules: Vec<Rule> },
-    /// Track-map placeholder.
-    Map,
+    /// Track map: an outline polyline (`pts` = flat x,y pairs normalized to
+    /// 0..=1000, pushed from the app's track DB) plus a position dot placed along
+    /// the path by the `track_pct` telemetry. Empty `pts` draws a placeholder.
+    Map {
+        #[serde(default)]
+        pts: Vec<u16>,
+    },
     /// A live value with no caption (the decomposed half of `Stat`); align within
     /// its box. The composition engine pairs this with a `Label`.
-    Value { field: u8, fmt: Option<Fmt>, scale: i32, unit: String, base: Pal, rules: Vec<Rule>, size: u8, align: Align },
+    Value { field: u8, fmt: Option<Fmt>, scale: i32, unit: String, base: Pal, rules: Vec<Rule>, size: u8, align: Align, valign: VAlign },
+    /// A touch button: a filled rounded panel + centred label. The device sends HID
+    /// joystick button `hid` (1..=32) on tap — momentary (down on touch, up on
+    /// release) unless `toggle`. An optional bound `field` + `rules` colour the
+    /// button from live game state and (when set) show its value below the label —
+    /// e.g. a wiper level or a toggle reflecting the sim's actual on/off state.
+    /// `action` is a legacy semantic name kept for back-compat. New fields default
+    /// so older serialized docs still decode.
+    Button {
+        label: String,
+        color: Pal,
+        action: String,
+        toggle: bool,
+        #[serde(default)]
+        hid: u8,
+        #[serde(default)]
+        field: u8,
+        #[serde(default)]
+        rules: Vec<Rule>,
+    },
     /// A composable widget: an element tree laid out inside the node's rect. This
     /// is how built-in and custom widgets are expressed (label vs value position,
     /// row/column arrangement, …) without new Rust per widget.
@@ -146,18 +195,26 @@ pub enum El {
     Col { gap: u8, pad: u8, children: Vec<Slot> },
     /// Overlay all children in the same (padded) box.
     Stack { pad: u8, children: Vec<El> },
+    /// A tab strip + the active page (one of `pages`). The device switches `active`
+    /// on a tap in the strip; the desktop preview shows `active`.
+    Tabs { titles: Vec<String>, active: u8, pages: Vec<El> },
     /// A drawable leaf — any widget kind, rendered in its computed rect.
     Leaf(Kind),
 }
 
-/// A positioned node: an absolute rectangle + what to draw in it.
+/// A positioned node: an absolute rectangle + what to draw in it. `page` is the
+/// tab page it belongs to when the screen is tabbed (0 otherwise / untabbed).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Node {
     pub rect: Rect,
     pub kind: Kind,
+    #[serde(default)]
+    pub page: u8,
 }
 
-/// One screen, targeting one display.
+/// One screen, targeting one display. When `tabs` is non-empty the screen is
+/// tabbed: a tab strip is drawn across the top and only nodes whose `page` matches
+/// the active tab are shown (used for paged button banks on the side display).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Screen {
     pub display: u8,
@@ -165,6 +222,8 @@ pub struct Screen {
     pub h: u32,
     pub bg: Pal,
     pub nodes: Vec<Node>,
+    #[serde(default)]
+    pub tabs: Vec<String>,
 }
 
 /// A complete UI: one or more screens (one per display).
@@ -214,25 +273,27 @@ pub fn builtin(
                         color: Pal::Dim,
                         size: 11,
                         align: Align::Center,
+                        valign: VAlign::Center,
                     }),
                 },
                 Slot {
                     flex: 2,
-                    el: El::Leaf(Kind::Value { field, fmt, scale, unit: unit.to_string(), base, rules, size, align: Align::Center }),
+                    el: El::Leaf(Kind::Value { field, fmt, scale, unit: unit.to_string(), base, rules, size, align: Align::Center, valign: VAlign::Center }),
                 },
             ]),
         })),
         "bar" => Kind::Bar { field, label: label.to_string(), scale, base, rules },
         "gearSpeed" => Kind::GearSpeed { speed: true },
         "gear" => Kind::GearSpeed { speed: false },
-        "rpmStrip" => Kind::RpmStrip,
+        "rpmStrip" => Kind::RpmStrip { count: 0 },
         "tyreGrid" => Kind::TyreGrid,
         "tcDual" => Kind::TcDual,
         "sectors" => Kind::Sectors,
         "lapPair" => Kind::LapPair,
         "position" => Kind::Position { label: label.to_string() },
         "flag" => Kind::Flag { field, base, rules },
-        "map" => Kind::Map,
+        "map" => Kind::Map { pts: Vec::new() },
+        "button" => Kind::Button { label: label.to_string(), color: base, action: String::new(), toggle: false, hid: 0, field, rules },
         _ => Kind::Stat { field, label: label.to_string(), fmt, scale, unit: unit.to_string(), base, rules, size },
     }
 }
@@ -298,14 +359,15 @@ fn draw_kind<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, kind: &Kind, t:
         Kind::Panel { color, radius } => {
             fill_round(d, x, y, w, h, *radius as i32, pal(*color));
         }
-        Kind::Label { text: s, color, size, align } => {
+        Kind::Label { text: s, color, size, align, valign } => {
             let sz = if *size == 0 { 14 } else { *size as u32 };
             let ax = match align {
                 Align::Left => x + 2,
                 Align::Center => cx,
                 Align::Right => x + w - 2,
             };
-            text(d, s, ax, y + h / 2, sz, pal(*color), align.h(), VerticalPosition::Center);
+            let (ay, vp) = valign.place(y, h);
+            text(d, s, ax, ay, sz, pal(*color), align.h(), vp);
         }
         Kind::Stat { field, label, fmt, scale, unit, base, rules, size } => {
             let raw = field_value(t, *field as usize);
@@ -332,8 +394,8 @@ fn draw_kind<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, kind: &Kind, t:
                 text(d, "KM/H", cx, y + h - 8, 11, pal(Pal::Dim), HorizontalAlignment::Center, VerticalPosition::Center);
             }
         }
-        Kind::RpmStrip => {
-            let seg = 12;
+        Kind::RpmStrip { count } => {
+            let seg = if *count == 0 { 12 } else { (*count as i32).clamp(1, 48) };
             let sw = w / seg;
             for i in 0..seg {
                 let c = segment_rgb(t, i, seg, &RevCfg::default(), &CarData::default(), now_ms);
@@ -384,12 +446,42 @@ fn draw_kind<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, kind: &Kind, t:
             let raw = field_value(t, *field as usize);
             fill_round(d, x + 4, y + 4, w - 8, h - 8, 4, rule_color(raw, *base, rules));
         }
-        Kind::Map => {
-            let _ = Circle::new(Point::new(cx - h / 3, y + h / 6), (h / 3).max(1) as u32)
-                .into_styled(PrimitiveStyle::with_stroke(pal(Pal::Dim), 1))
-                .draw(d);
+        Kind::Map { pts } => {
+            let n = pts.len() / 2;
+            if n >= 2 {
+                // map normalized (0..=1000) coords into the widget box with a margin
+                let mg = 6;
+                let bx = x + mg;
+                let by = y + mg;
+                let bw = (w - 2 * mg).max(1);
+                let bh = (h - 2 * mg).max(1);
+                let to_screen = |i: usize| -> Point {
+                    let px = pts[2 * i].min(1000) as i32;
+                    let py = pts[2 * i + 1].min(1000) as i32;
+                    Point::new(bx + px * bw / 1000, by + py * bh / 1000)
+                };
+                // outline as a closed polyline
+                for i in 0..n {
+                    let a = to_screen(i);
+                    let b = to_screen((i + 1) % n);
+                    let _ = Line::new(a, b)
+                        .into_styled(PrimitiveStyle::with_stroke(pal(Pal::Dim), 1))
+                        .draw(d);
+                }
+                // position dot placed by lap progress (index along the polyline)
+                let tp = t.track_pct.clamp(0, 1000) as i64;
+                let seg = ((tp * n as i64 / 1000) as usize).min(n - 1);
+                let dot = to_screen(seg);
+                let _ = Circle::new(Point::new(dot.x - 3, dot.y - 3), 7)
+                    .into_styled(PrimitiveStyle::with_fill(pal(Pal::Red)))
+                    .draw(d);
+            } else {
+                let _ = Circle::new(Point::new(cx - h / 3, y + h / 6), (h / 3).max(1) as u32)
+                    .into_styled(PrimitiveStyle::with_stroke(pal(Pal::Dim), 1))
+                    .draw(d);
+            }
         }
-        Kind::Value { field, fmt, scale, unit, base, rules, size, align } => {
+        Kind::Value { field, fmt, scale, unit, base, rules, size, align, valign } => {
             let raw = field_value(t, *field as usize);
             let def = field_def(*field as usize);
             let f = fmt.unwrap_or_else(|| def.map(|d| d.fmt).unwrap_or(Fmt::Int));
@@ -400,8 +492,34 @@ fn draw_kind<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, kind: &Kind, t:
                 Align::Center => cx,
                 Align::Right => x + w - 2,
             };
+            let (ay, vp) = valign.place(y, h);
             let s = format::format(raw, f, sc, unit);
-            text(d, &s, ax, y + h / 2, sz, rule_color(raw, *base, rules), align.h(), VerticalPosition::Center);
+            text(d, &s, ax, ay, sz, rule_color(raw, *base, rules), align.h(), vp);
+        }
+        Kind::Button { label, color, toggle, field, rules, .. } => {
+            let raw = if *field > 0 { field_value(t, *field as usize) } else { 0 };
+            // bound field drives the fill colour via rules (game-state-aware)
+            let bg = if *field > 0 { rule_color(raw, *color, rules) } else { pal(*color) };
+            fill_round(d, x + 1, y + 1, w - 2, h - 2, 6, bg);
+            // toggles read differently from momentary push buttons via an outline
+            if *toggle {
+                let _ = RoundedRectangle::with_equal_corners(
+                    Rectangle::new(Point::new(x + 2, y + 2), Size::new((w - 4).max(0) as u32, (h - 4).max(0) as u32)),
+                    Size::new(5, 5),
+                )
+                .into_styled(PrimitiveStyle::with_stroke(pal(Pal::White), 1))
+                .draw(d);
+            }
+            let has_val = *field > 0;
+            let ly = if has_val { y + h / 2 - 8 } else { y + h / 2 };
+            text(d, label, cx, ly, 14, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
+            if has_val {
+                let def = field_def(*field as usize);
+                let f = def.map(|d| d.fmt).unwrap_or(Fmt::Int);
+                let sc = def.map(|d| d.scale).unwrap_or(1);
+                let s = format::format(raw, f, sc, "");
+                text(d, &s, cx, y + h / 2 + 9, 12, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
+            }
         }
         Kind::Widget(el) => layout_draw(d, r, el, t, now_ms),
     }
@@ -427,6 +545,22 @@ fn layout_draw<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, el: &El, t: &
             let inner = inset(r, *pad as i32);
             for c in children {
                 layout_draw(d, &inner, c, t, now_ms);
+            }
+        }
+        El::Tabs { titles, active, pages } => {
+            // tab strip across the top, active page fills the rest
+            let strip_h = 22.min(r.h as i32 / 4).max(14);
+            let n = titles.len().max(1) as i32;
+            let tw = r.w as i32 / n;
+            for (i, title) in titles.iter().enumerate() {
+                let tx = r.x + i as i32 * tw;
+                let on = i as u8 == *active;
+                fill_round(d, tx + 1, r.y + 1, tw - 2, strip_h - 2, 3, pal(if on { Pal::Panel } else { Pal::Bg }));
+                text(d, title, tx + tw / 2, r.y + strip_h / 2, 11, pal(if on { Pal::White } else { Pal::Dim }), HorizontalAlignment::Center, VerticalPosition::Center);
+            }
+            if let Some(page) = pages.get(*active as usize) {
+                let body = Rect { x: r.x, y: r.y + strip_h, w: r.w, h: (r.h as i32 - strip_h).max(0) as u32 };
+                layout_draw(d, &body, page, t, now_ms);
             }
         }
         El::Row { gap, pad, children } => {
@@ -479,14 +613,16 @@ fn node_sig(kind: &Kind, t: &Telemetry, now_ms: i64) -> u64 {
     }
     let fv = |id: u8| field_value(t, id as usize) as i64;
     match kind {
-        Kind::Panel { .. } | Kind::Label { .. } | Kind::Map => 0,
+        Kind::Panel { .. } | Kind::Label { .. } => 0,
+        Kind::Map { .. } => h(&[t.track_pct as i64]),
         Kind::Stat { field, .. }
         | Kind::Bar { field, .. }
         | Kind::Flag { field, .. }
+        | Kind::Button { field, .. }
         | Kind::Value { field, .. } => h(&[fv(*field)]),
         Kind::GearSpeed { speed } => h(&[t.gear as i64, if *speed { t.speed_kmh as i64 } else { 0 }]),
         // blink phase keeps the rev strip live
-        Kind::RpmStrip => h(&[t.rpm as i64, t.max_rpm as i64, t.shift_rpm as i64, now_ms / 80]),
+        Kind::RpmStrip { .. } => h(&[t.rpm as i64, t.max_rpm as i64, t.shift_rpm as i64, now_ms / 80]),
         Kind::TyreGrid => h(&[t.tt_fl_m as i64, t.tt_fr_m as i64, t.tt_rl_m as i64, t.tt_rr_m as i64]),
         Kind::TcDual => h(&[t.tc as i64, t.abs as i64]),
         Kind::Sectors => h(&[t.s1_ms as i64, t.s2_ms as i64, t.s3_ms as i64, t.bs1_ms as i64, t.bs2_ms as i64, t.bs3_ms as i64]),
@@ -507,6 +643,13 @@ fn el_sig(el: &El, t: &Telemetry, now_ms: i64) -> u64 {
         El::Stack { children, .. } => children.iter().fold(0, |a, c| mix(a, el_sig(c, t, now_ms))),
         El::Row { children, .. } | El::Col { children, .. } => {
             children.iter().fold(0, |a, s| mix(a, el_sig(&s.el, t, now_ms)))
+        }
+        El::Tabs { active, pages, .. } => {
+            let base = mix(0x9e3779b9, *active as u64);
+            match pages.get(*active as usize) {
+                Some(p) => mix(base, el_sig(p, t, now_ms)),
+                None => base,
+            }
         }
     }
 }
@@ -563,6 +706,53 @@ pub fn render_screen_diff<D: DrawTarget<Color = Rgb565>>(
             draw_kind(d, &node.rect, &node.kind, t, now_ms);
             cache.sigs[i] = sig;
         }
+    }
+}
+
+/// Height of the tab strip on a tabbed screen.
+pub const TAB_STRIP_H: i32 = 26;
+
+/// Which tab a tap at (tx,ty) lands on, if it's in the strip of an `n`-tab screen
+/// of width `w`. None if the tap is below the strip (i.e. in the page body).
+pub fn tab_at(w: u32, n: usize, tx: i32, ty: i32) -> Option<u8> {
+    if n == 0 || ty < 0 || ty >= TAB_STRIP_H || tx < 0 || tx >= w as i32 {
+        return None;
+    }
+    let tw = (w as i32 / n as i32).max(1);
+    Some(((tx / tw) as usize).min(n - 1) as u8)
+}
+
+/// Full repaint of a tabbed screen: a tab strip across the top (active highlighted)
+/// plus only the nodes on the active page. Used for the side button banks; a full
+/// repaint each frame is fine for the simple button screen and sidesteps dirty-rect
+/// bookkeeping across tab switches.
+pub fn render_tabbed<D: DrawTarget<Color = Rgb565>>(
+    s: &Screen,
+    active: u8,
+    t: &Telemetry,
+    now_ms: i64,
+    d: &mut D,
+) {
+    let _ = d.clear(pal(s.bg));
+    let n = s.tabs.len().max(1) as i32;
+    let tw = s.w as i32 / n;
+    for (i, title) in s.tabs.iter().enumerate() {
+        let tx = i as i32 * tw;
+        let on = i as u8 == active;
+        fill_round(d, tx + 1, 1, tw - 2, TAB_STRIP_H - 2, 3, pal(if on { Pal::Panel } else { Pal::Bg }));
+        text(
+            d,
+            title,
+            tx + tw / 2,
+            TAB_STRIP_H / 2,
+            12,
+            pal(if on { Pal::White } else { Pal::Dim }),
+            HorizontalAlignment::Center,
+            VerticalPosition::Center,
+        );
+    }
+    for node in s.nodes.iter().filter(|n| n.page == active) {
+        draw_kind(d, &node.rect, &node.kind, t, now_ms);
     }
 }
 
@@ -631,29 +821,32 @@ pub fn demo_doc() -> UiDoc {
     let stat = |x: i32, y: i32, w: u32, h: u32, label: &str, field: u8, base: Pal, rules: Vec<Rule>| Node {
         rect: Rect { x, y, w, h },
         kind: Kind::Stat { field, label: label.into(), fmt: None, scale: 0, unit: String::new(), base, rules, size: 0 },
+        page: 0,
     };
     let panel = |x: i32, y: i32, w: u32, h: u32| Node {
         rect: Rect { x, y, w, h },
         kind: Kind::Panel { color: Pal::Panel, radius: 12 },
+        page: 0,
     };
+    let leaf = |x: i32, y: i32, w: u32, h: u32, kind: Kind| Node { rect: Rect { x, y, w, h }, kind, page: 0 };
     let nodes = alloc::vec![
-        Node { rect: Rect { x: 0, y: 2, w: 480, h: 42 }, kind: Kind::RpmStrip },
+        leaf(0, 2, 480, 42, Kind::RpmStrip { count: 0 }),
         panel(136, 50, 208, 200),
-        Node { rect: Rect { x: 136, y: 50, w: 208, h: 200 }, kind: Kind::GearSpeed { speed: true } },
+        leaf(136, 50, 208, 200, Kind::GearSpeed { speed: true }),
         panel(4, 50, 128, 90),
         stat(4, 50, 128, 90, "DELTA", 10 /*delta_ms*/, Pal::Amber, alloc::vec![
             Rule { op: RuleOp::Lt, threshold: 0, color: Pal::Green },
             Rule { op: RuleOp::Gt, threshold: 0, color: Pal::Red },
         ]),
         panel(4, 150, 128, 120),
-        Node { rect: Rect { x: 4, y: 150, w: 128, h: 120 }, kind: Kind::TyreGrid },
+        leaf(4, 150, 128, 120, Kind::TyreGrid),
         panel(348, 50, 128, 90),
         stat(348, 50, 128, 90, "FUEL", 23 /*fuel_dl*/, Pal::Amber, alloc::vec![]),
         panel(348, 150, 128, 120),
-        Node { rect: Rect { x: 348, y: 150, w: 128, h: 120 }, kind: Kind::Position { label: "POS".into() } },
-        Node { rect: Rect { x: 0, y: 276, w: 480, h: 42 }, kind: Kind::LapPair },
+        leaf(348, 150, 128, 120, Kind::Position { label: "POS".into() }),
+        leaf(0, 276, 480, 42, Kind::LapPair),
     ];
-    UiDoc { version: 1, screens: alloc::vec![Screen { display: 0, w: 480, h: 320, bg: Pal::Bg, nodes }] }
+    UiDoc { version: 1, screens: alloc::vec![Screen { display: 0, w: 480, h: 320, bg: Pal::Bg, nodes, tabs: Vec::new() }] }
 }
 
 /// Demo telemetry (a believable race frame) for previews without a device.
@@ -692,7 +885,8 @@ mod engine_tests {
             w: 120,
             h: 80,
             bg: Pal::Bg,
-            nodes: Vec::from([Node { rect: Rect { x: 0, y: 0, w: 120, h: 80 }, kind: k }]),
+            nodes: Vec::from([Node { rect: Rect { x: 0, y: 0, w: 120, h: 80 }, kind: k, page: 0 }]),
+            tabs: Vec::new(),
         };
         let t = demo_telem();
         let mut fb = Framebuffer::new(120, 80);

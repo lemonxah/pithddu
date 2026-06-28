@@ -103,9 +103,11 @@ mod tests {
         assert_eq!(field_id_from_str("rpm"), 2);
         assert_eq!(field_id_from_str("delta_ms"), 10);
         assert_eq!(field_id_from_str("ignition"), 55);
+        assert_eq!(field_id_from_str("flag"), 56);
+        assert_eq!(field_id_from_str("track_pct"), 57);
         assert_eq!(field_id_from_str("nope"), 0);
-        assert_eq!(FIELDS.len(), 55);
-        assert_eq!(FIELD_COUNT, 56);
+        assert_eq!(FIELDS.len(), 57);
+        assert_eq!(FIELD_COUNT, 58);
     }
 
     #[test]

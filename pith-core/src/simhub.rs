@@ -91,6 +91,11 @@ pub struct Telemetry {
     pub wipers: i32,
     pub pit_limiter: i32,
     pub ignition: i32,
+    // Current race flag as a code: 0 none, 1 green, 2 yellow, 3 blue, 4 white,
+    // 5 checkered, 6 black/meatball. Drives the Flag widget.
+    pub flag: i32,
+    // Lap progress in 0..=1000 (= 0..100.0%). Places the dot on the track map.
+    pub track_pct: i32,
     // World position for the self-learned track map
     pub pos_x: i32,
     pub pos_z: i32,
@@ -316,6 +321,8 @@ pub fn parse_line(line: &str) -> Option<Telemetry> {
         if !c.opt_field(&mut t.wipers) { break; }
         if !c.opt_field(&mut t.pit_limiter) { break; }
         if !c.opt_field(&mut t.ignition) { break; }
+        if !c.opt_field(&mut t.flag) { break; }
+        if !c.opt_field(&mut t.track_pct) { break; }
         if !c.opt_field(&mut t.pos_x) { break; }
         if !c.opt_field(&mut t.pos_z) { break; }
         if !c.opt_field(&mut t.s1_ms) { break; }

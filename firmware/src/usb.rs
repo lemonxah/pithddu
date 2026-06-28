@@ -64,7 +64,7 @@ const fn telem_zero() -> Telemetry {
         tp_fl: 0, tp_fr: 0, tp_rl: 0, tp_rr: 0, tw_fl: 0, tw_fr: 0, tw_rl: 0, tw_rr: 0,
         bt_fl: 0, bt_fr: 0, bt_rl: 0, bt_rr: 0,
         throttle: 0, brake: 0, clutch: 0, steer: 0, tc_active: 0, abs_active: 0,
-        headlights: 0, wipers: 0, pit_limiter: 0, ignition: 0, pos_x: 0, pos_z: 0,
+        headlights: 0, wipers: 0, pit_limiter: 0, ignition: 0, flag: 0, track_pct: 0, pos_x: 0, pos_z: 0,
         s1_ms: 0, s2_ms: 0, s3_ms: 0, bs1_ms: 0, bs2_ms: 0, bs3_ms: 0,
     }
 }

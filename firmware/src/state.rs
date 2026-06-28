@@ -257,6 +257,11 @@ impl AppState {
 
     pub fn set_brightness(&mut self, pct: i32) {
         let b = pct.clamp(0, 100) as u8;
+        // Live brightness updates (GUI slider, on-screen slider) can arrive rapidly;
+        // only touch NVS when the value actually changes so dragging doesn't wear flash.
+        if b == self.brightness {
+            return;
+        }
         self.brightness = b;
         if let Some(nvs) = self.nvs.as_ref() {
             let _ = nvs.set_u8("bright", b);
@@ -318,7 +323,7 @@ impl AppState {
         let board = option_env!("PITHDDU_BOARD").unwrap_or("xiao_s3");
         let p = &self.pins;
         format!(
-            "{{\"name\":\"Pith DDU\",\"fw\":\"0.9.9\",\"board\":\"{board}\",\"serial\":\"{serial}\",\"buttonPages\":{bp},\
+            "{{\"name\":\"Pith DDU\",\"fw\":\"{fw}\",\"board\":\"{board}\",\"serial\":\"{serial}\",\"buttonPages\":{bp},\
 \"screens\":[{{\"role\":\"main\",\"w\":480,\"h\":320,\"touch\":true}},\
 {{\"role\":\"side\",\"w\":480,\"h\":320,\"touch\":true}}],\
 \"leds\":{{\"rev\":{lr},\"tc\":{lt},\"abs\":{la},\"separate\":true}},\
@@ -326,6 +331,7 @@ impl AppState {
 \"disp1_cs\":{d1},\"disp2_cs\":{d2},\"touch1_cs\":{t1},\"touch2_cs\":{t2},\"led_din\":{din},\
 \"race_screen\":{rs},\"led_rev\":{lr},\"led_tc\":{lt},\"led_abs\":{la},\"led_rgbw\":{lw}}},\
 \"disp\":{{\"rot\":{rot},\"fh\":{fh},\"fv\":{fv},\"bgr\":{bgr},\"inv\":{inv}}}}}\n",
+            fw = env!("CARGO_PKG_VERSION"),
             bp = self.button_pages,
             lr = p.led_rev, lt = p.led_tc, la = p.led_abs, lw = p.led_rgbw,
             sclk = p.sclk, mosi = p.mosi, miso = p.miso, dc = p.dc,

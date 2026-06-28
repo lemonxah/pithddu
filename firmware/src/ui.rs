@@ -405,27 +405,60 @@ pub fn render_buttons<D: DrawTarget<Color = Rgb565>>(
 }
 
 // ---- config screen ----
+// Tapping this corner of the race panel opens the on-device config screen.
+pub const CONFIG_HOTSPOT: (i32, i32, i32, i32) = (0, 0, 86, 56);
 pub const SLD: (i32, i32, i32, i32) = (40, 150, 400, 40); // brightness slider
 pub const SIM_BTN: (i32, i32, i32, i32) = (40, 262, 180, 46);
 pub const RBT_BTN: (i32, i32, i32, i32) = (260, 262, 180, 46);
 pub const BACK_BTN: (i32, i32, i32, i32) = (20, 16, 120, 46);
 
-pub fn render_config<D: DrawTarget<Color = Rgb565>>(d: &mut D, brightness: u8, sim: bool) {
+/// Stats shown on the device config screen.
+pub struct ConfigInfo<'a> {
+    pub fw: &'a str,
+    pub board: &'a str,
+    pub serial: &'a str,
+    pub car: &'a str,
+    pub heap_kb: i32,
+    pub uptime_s: i64,
+    pub brightness: u8,
+    pub sim: bool,
+}
+
+/// A small "CFG" affordance drawn in the race panel's top-left corner so the
+/// tap-to-open config gesture is discoverable. Drawn over the race render each frame.
+pub fn render_config_hint<D: DrawTarget<Color = Rgb565>>(d: &mut D) {
+    fill_round(d, 4, 4, 44, 18, 4, pal(Pal::Panel));
+    text(d, "CFG", 4 + 22, 4 + 9, 11, pal(Pal::Dim), HorizontalAlignment::Center, VerticalPosition::Center);
+}
+
+pub fn render_config<D: DrawTarget<Color = Rgb565>>(d: &mut D, info: &ConfigInfo) {
     let _ = d.clear(C_BG);
     fill_round(d, BACK_BTN.0, BACK_BTN.1, BACK_BTN.2, BACK_BTN.3, 6, pal(Pal::Panel));
     text(d, "< RACE", BACK_BTN.0 + BACK_BTN.2 / 2, BACK_BTN.1 + BACK_BTN.3 / 2, 14, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
-    text(d, "CONFIG", W / 2, 32, 16, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
-    text(d, "FW 0.9.5", W - 20, 24, 11, pal(Pal::Dim), HorizontalAlignment::Right, VerticalPosition::Center);
+    text(d, "PITH DDU - CONFIG", W / 2, 32, 16, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
 
-    text(d, "REV COUNTER BRIGHTNESS", SLD.0, SLD.1 - 18, 12, pal(Pal::Dim), HorizontalAlignment::Left, VerticalPosition::Center);
+    // --- device stats panel ---
+    let mins = info.uptime_s / 60;
+    let secs = info.uptime_s % 60;
+    let line1 = format!("FW {}   BOARD {}", info.fw, info.board);
+    let line2 = format!("S/N {}", info.serial);
+    let line3 = format!("CAR {}", if info.car.is_empty() { "—" } else { info.car });
+    let line4 = format!("HEAP {} KB   UP {}:{:02}", info.heap_kb, mins, secs);
+    text(d, &line1, 40, 74, 12, pal(Pal::Dim), HorizontalAlignment::Left, VerticalPosition::Center);
+    text(d, &line2, 40, 92, 12, pal(Pal::Dim), HorizontalAlignment::Left, VerticalPosition::Center);
+    text(d, &line3, 40, 110, 12, pal(Pal::Dim), HorizontalAlignment::Left, VerticalPosition::Center);
+    text(d, &line4, 40, 128, 12, pal(Pal::Dim), HorizontalAlignment::Left, VerticalPosition::Center);
+
+    let b = info.brightness;
+    text(d, "SHIFT LED BRIGHTNESS", SLD.0, SLD.1 - 18, 12, pal(Pal::Dim), HorizontalAlignment::Left, VerticalPosition::Center);
     fill_round(d, SLD.0, SLD.1, SLD.2, SLD.3, 6, pal(Pal::Panel));
-    fill_round(d, SLD.0, SLD.1, SLD.2 * brightness as i32 / 100, SLD.3, 6, pal(Pal::Cyan));
-    text(d, &format!("{brightness}%"), SLD.0 + SLD.2 / 2, SLD.1 + SLD.3 / 2, 14, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
+    fill_round(d, SLD.0, SLD.1, SLD.2 * b as i32 / 100, SLD.3, 6, pal(Pal::Cyan));
+    text(d, &format!("{b}%"), SLD.0 + SLD.2 / 2, SLD.1 + SLD.3 / 2, 14, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
 
-    fill_round(d, SIM_BTN.0, SIM_BTN.1, SIM_BTN.2, SIM_BTN.3, 6, if sim { pal(Pal::Green) } else { pal(Pal::Panel) });
-    text(d, "SIM", SIM_BTN.0 + SIM_BTN.2 / 2, SIM_BTN.1 + SIM_BTN.3 / 2, 14, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
-    fill_round(d, RBT_BTN.0, RBT_BTN.1, RBT_BTN.2, RBT_BTN.3, 6, pal(Pal::Panel));
-    text(d, "REBOOT", RBT_BTN.0 + RBT_BTN.2 / 2, RBT_BTN.1 + RBT_BTN.3 / 2, 14, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
+    fill_round(d, SIM_BTN.0, SIM_BTN.1, SIM_BTN.2, SIM_BTN.3, 6, if info.sim { pal(Pal::Green) } else { pal(Pal::Panel) });
+    text(d, if info.sim { "SIM: ON" } else { "RUN SIM" }, SIM_BTN.0 + SIM_BTN.2 / 2, SIM_BTN.1 + SIM_BTN.3 / 2, 14, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
+    fill_round(d, RBT_BTN.0, RBT_BTN.1, RBT_BTN.2, RBT_BTN.3, 6, pal(Pal::Red));
+    text(d, "RESTART", RBT_BTN.0 + RBT_BTN.2 / 2, RBT_BTN.1 + RBT_BTN.3 / 2, 14, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
 }
 
 pub fn render_ota<D: DrawTarget<Color = Rgb565>>(d: &mut D, pct: i32) {
