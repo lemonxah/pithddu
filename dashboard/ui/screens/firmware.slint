@@ -1,8 +1,8 @@
 // Firmware — live device version, OTA update + local build (pick your controller).
 import { Theme } from "../theme.slint";
 import { AppState, Firmware, FwState, FwComponent, DeviceCaps, DeviceCfg } from "../models.slint";
-import { Card, PrimaryButton, GhostButton, ToggleSwitch, SectionLabel, Mono } from "../widgets.slint";
-import { ComboBox, CheckBox } from "std-widgets.slint";
+import { Card, PrimaryButton, GhostButton, ToggleSwitch, SectionLabel, Mono, FlipCombo } from "../widgets.slint";
+import { CheckBox } from "std-widgets.slint";
 
 export component FirmwareScreen inherits Rectangle {
     property <bool> busy: Firmware.state == FwState.downloading
@@ -208,7 +208,7 @@ export component FirmwareScreen inherits Rectangle {
                                 text: Firmware.fetching-releases ? "Checking…" : "No releases found — build your own below.";
                                 color: Theme.text3; font-size: 11px;
                             }
-                            if Firmware.releases.length > 0: ComboBox {
+                            if Firmware.releases.length > 0: FlipCombo {
                                 model: Firmware.releases;
                                 current-index: Firmware.sel-release;
                                 enabled: !root.busy;
@@ -228,153 +228,6 @@ export component FirmwareScreen inherits Rectangle {
                             }
                             if !AppState.connected: VerticalLayout { alignment: center; Mono { text: "connect device to flash"; color: Theme.text3; font-size: 11px; } }
                             Rectangle { }
-                        }
-                    }
-                }
-                // build firmware
-                Card {
-                    VerticalLayout {
-                        padding: 18px;
-                        spacing: 12px;
-                        HorizontalLayout {
-                            SectionLabel { text: "BUILD FIRMWARE"; }
-                            Rectangle { }
-                            Mono {
-                                text: Firmware.have-bin ? "✓ bin ready" : "no bin yet";
-                                color: Firmware.have-bin ? Theme.green : Theme.text3;
-                                font-size: 11px;
-                                vertical-alignment: center;
-                            }
-                        }
-                        Text {
-                            text: "Pick your controller and compile the firmware locally if you don't already have a .bin.";
-                            color: Theme.text3; font-size: 12px; wrap: word-wrap;
-                        }
-                        // controller picker
-                        VerticalLayout {
-                            spacing: 6px;
-                            SectionLabel { text: "CONTROLLER"; }
-                            ComboBox {
-                                model: DeviceCfg.boards;
-                                current-index: DeviceCfg.board;
-                                enabled: !Firmware.building;
-                                selected(v) => { DeviceCfg.set-board(self.current-index); }
-                            }
-                        }
-                        // toolchain missing notice
-                        if !Firmware.can-build: Mono {
-                            text: "ESP-IDF not found — building is unavailable on this machine.";
-                            color: Theme.amber; font-size: 11px;
-                        }
-                        // build in progress
-                        if Firmware.building: VerticalLayout {
-                            spacing: 8px;
-                            Rectangle {
-                                height: 8px;
-                                background: Theme.elev;
-                                border-radius: 4px;
-                                Rectangle {
-                                    x: 0;
-                                    width: parent.width * Firmware.build-progress;
-                                    height: parent.height;
-                                    background: Theme.accent;
-                                    border-radius: 4px;
-                                    animate width { duration: 200ms; }
-                                }
-                            }
-                            Mono { text: Math.round(Firmware.build-progress * 100) + "%  " + Firmware.build-log; color: Theme.accent-soft; font-size: 11px; }
-                        }
-                        // last result line
-                        if !Firmware.building && Firmware.build-status != "": Mono {
-                            text: Firmware.build-status;
-                            color: Firmware.have-bin ? Theme.green : Theme.amber;
-                            font-size: 11px;
-                        }
-                        // actions
-                        HorizontalLayout {
-                            spacing: 10px;
-                            if !Firmware.building: PrimaryButton {
-                                text: Firmware.have-bin ? "REBUILD" : "BUILD FIRMWARE";
-                                enabled: Firmware.can-build;
-                                clicked => { Firmware.build(); }
-                            }
-                            if Firmware.building: GhostButton { text: "Cancel"; clicked => { Firmware.cancel-build(); } }
-                            if Firmware.have-bin && !Firmware.building: PrimaryButton {
-                                text: "FLASH THIS BUILD";
-                                enabled: AppState.connected;
-                                clicked => { Firmware.flash-built(); }
-                            }
-                            Rectangle { }
-                        }
-                        if Firmware.bin-path != "": Mono { text: Firmware.bin-path; color: Theme.text3; font-size: 10px; }
-                    }
-                }
-                // initial / full-image flash over USB serial — only when no PithDDU is
-                // connected (a running device updates over HID instead).
-                if !root.connected: Card {
-                    VerticalLayout {
-                        padding: 18px;
-                        spacing: 12px;
-                        HorizontalLayout {
-                            SectionLabel { text: "INITIAL SETUP — FLASH OVER USB"; }
-                            Rectangle { }
-                            GhostButton { text: "↻ Rescan"; clicked => { Firmware.refresh-ports(); } }
-                        }
-                        Text {
-                            text: "No Pith DDU detected. Flash a blank/standalone ESP32 over its USB serial port. Pick the exact device below so you don't flash the wrong one.";
-                            color: Theme.text3; font-size: 12px; wrap: word-wrap;
-                        }
-                        VerticalLayout {
-                            spacing: 6px;
-                            SectionLabel { text: "TARGET SERIAL PORT"; }
-                            if Firmware.serial-ports.length == 0: Mono {
-                                text: "No serial ports found — plug in the board (hold BOOT, tap RESET for download mode), then Rescan.";
-                                color: Theme.amber; font-size: 11px;
-                            }
-                            if Firmware.serial-ports.length > 0: ComboBox {
-                                model: Firmware.serial-ports;
-                                current-index: Firmware.serial-port;
-                                enabled: !Firmware.flashing-serial;
-                                selected(v) => { Firmware.serial-port = self.current-index; }
-                            }
-                            if Firmware.serial-ports.length > 0 && Firmware.esp-port-count == 0: Mono {
-                                text: "⚠ none look like an ESP32 — double-check this is the right port.";
-                                color: Theme.amber; font-size: 11px;
-                            }
-                        }
-                        HorizontalLayout {
-                            CheckBox {
-                                checked: Firmware.full-image;
-                                text: "Full image (bootloader + partitions + app — first-time setup)";
-                                enabled: !Firmware.flashing-serial;
-                                toggled => { Firmware.full-image = self.checked; }
-                            }
-                            Rectangle { }
-                        }
-                        if Firmware.flashing-serial: VerticalLayout {
-                            spacing: 8px;
-                            Rectangle {
-                                height: 8px; background: Theme.elev; border-radius: 4px;
-                                Rectangle { x: 0; width: parent.width * Firmware.serial-progress; height: parent.height; background: Theme.accent; border-radius: 4px; animate width { duration: 200ms; } }
-                            }
-                            Mono { text: Math.round(Firmware.serial-progress * 100) + "%  " + Firmware.serial-log; color: Theme.accent-soft; font-size: 11px; }
-                        }
-                        if !Firmware.flashing-serial && Firmware.serial-status != "": Mono {
-                            text: Firmware.serial-status; color: Theme.text2; font-size: 11px;
-                        }
-                        HorizontalLayout {
-                            spacing: 10px;
-                            if !Firmware.flashing-serial: PrimaryButton {
-                                text: Firmware.full-image ? "FLASH FULL IMAGE" : "FLASH APP";
-                                enabled: Firmware.can-build && Firmware.serial-ports.length > 0;
-                                clicked => { Firmware.serial-flash(); }
-                            }
-                            if Firmware.flashing-serial: GhostButton { text: "Cancel"; clicked => { Firmware.cancel-build(); } }
-                            Rectangle { }
-                        }
-                        if !Firmware.can-build: Mono {
-                            text: "ESP-IDF not found — flashing is unavailable on this machine.";
-                            color: Theme.amber; font-size: 11px;
                         }
                     }
                 }

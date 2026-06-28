@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Pith DDU – SimHub plugin.
+
+    SimHub is a Windows / .NET Framework 4.8 app, so this targets net48 and
+    references two DLLs that ship inside the SimHub install folder. Point the
+    build at your install with either:
+
+        dotnet build -c Release -p:SimHubPath="C:\Program Files (x86)\SimHub"
+
+    or by setting a SimHubPath environment variable / editing the default below.
+
+    The output PithDdu.SimHubPlugin.dll is copied straight into the SimHub
+    folder (SimHub scans its own directory for IPlugin implementations).
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>PithDdu.SimHubPlugin</AssemblyName>
+    <RootNamespace>PithDdu.SimHubPlugin</RootNamespace>
+    <Configuration Condition="'$(Configuration)' == ''">Release</Configuration>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <!-- Default SimHub install dir; override with -p:SimHubPath=... -->
+    <SimHubPath Condition="'$(SimHubPath)' == ''">$(SIMHUB_PATH)</SimHubPath>
+    <SimHubPath Condition="'$(SimHubPath)' == ''">C:\Program Files (x86)\SimHub</SimHubPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- net48 reference assemblies so this builds with `dotnet` on Linux/macOS too
+         (no Windows or Mono needed) — handy for compiling against a Wine SimHub. -->
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+
+    <!-- SimHub's own DLLs: copy them out of your SimHub folder (incl. a Wine
+         prefix, e.g. ~/.wine/drive_c/Program Files (x86)/SimHub) and point
+         SimHubPath at it. Use '/' separators on Linux. -->
+    <Reference Include="GameReaderCommon">
+      <HintPath>$(SimHubPath)/GameReaderCommon.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SimHub.Plugins">
+      <HintPath>$(SimHubPath)/SimHub.Plugins.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Drop the built DLL into the SimHub folder so it's picked up on restart. -->
+  <Target Name="InstallToSimHub" AfterTargets="Build"
+          Condition="Exists('$(SimHubPath)') and '$(NoInstall)' != 'true'">
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(SimHubPath)" />
+    <Message Importance="high" Text="Installed $(TargetFileName) -> $(SimHubPath)" />
+  </Target>
+
+</Project>

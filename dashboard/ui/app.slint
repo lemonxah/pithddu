@@ -37,6 +37,10 @@ export component AppWindow inherits Window {
     min-width: 1120px;
     min-height: 700px;
 
+    // publish the window height so dropdowns/popups can flip up near the bottom
+    init => { AppState.win-h = self.height; }
+    changed height => { AppState.win-h = self.height; }
+
     VerticalLayout {
         TitleBar { }
         // Body. Everything below the title bar is disabled until a device is

@@ -2,8 +2,8 @@
 // device; applied on reboot). Firmware build/OTA lives on the Firmware tab.
 import { Theme } from "../theme.slint";
 import { AppState, Page, DeviceCaps, DeviceCfg, PinRow, DeviceLog } from "../models.slint";
-import { Card, PrimaryButton, GhostButton, SectionLabel, Dot, ToggleSwitch } from "../widgets.slint";
-import { LineEdit, Button, ComboBox, ScrollView, TextEdit } from "std-widgets.slint";
+import { Card, PrimaryButton, GhostButton, SectionLabel, Dot, ToggleSwitch, FlipCombo } from "../widgets.slint";
+import { LineEdit, Button, ScrollView, TextEdit } from "std-widgets.slint";
 
 // Pin picker with a scrollable popup that flips upward near the window bottom.
 component PinPicker inherits Rectangle {
@@ -115,7 +115,7 @@ export component DeviceConfigScreen inherits Rectangle {
                             spacing: 10px;
                             Text { text: "Board"; color: Theme.text; font-size: 13px; vertical-alignment: center; }
                             Rectangle { }
-                            ComboBox {
+                            FlipCombo {
                                 width: 220px;
                                 model: DeviceCfg.boards;
                                 current-index: DeviceCfg.board;
@@ -133,7 +133,7 @@ export component DeviceConfigScreen inherits Rectangle {
                             spacing: 10px;
                             Text { text: "Race screen on"; color: Theme.text; font-size: 13px; vertical-alignment: center; }
                             Rectangle { }
-                            ComboBox {
+                            FlipCombo {
                                 width: 150px;
                                 model: ["Display 1", "Display 2"];
                                 current-index: DeviceCfg.race-screen;
@@ -151,7 +151,7 @@ export component DeviceConfigScreen inherits Rectangle {
                             spacing: 10px;
                             Text { text: "Rotation"; color: Theme.text; font-size: 13px; vertical-alignment: center; }
                             Rectangle { }
-                            ComboBox {
+                            FlipCombo {
                                 width: 150px;
                                 model: ["0°", "90°", "180°", "270°"];
                                 current-index: DeviceCfg.disp-rot;

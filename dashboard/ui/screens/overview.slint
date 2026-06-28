@@ -1,8 +1,7 @@
 // Overview / home (HANDOFF.md §9).
 import { Theme } from "../theme.slint";
-import { AppState, Page, Telemetry, ShiftCfg, Firmware, CarLib, DeviceCaps } from "../models.slint";
+import { AppState, Page, Telemetry, ShiftCfg, Firmware, CarLib, DeviceCaps, RaceLayout } from "../models.slint";
 import { Card, PrimaryButton, Dot, Mono } from "../widgets.slint";
-import { DeviceScreen } from "../components/device-screen.slint";
 
 component QuickCard inherits Rectangle {
     callback clicked;
@@ -128,7 +127,16 @@ export component OverviewScreen inherits Rectangle {
                             y: (parent.height - self.height) / 2;
                             background: #000000;
                             border-radius: 14px;
-                            DeviceScreen { x: 6px; y: 6px; width: parent.width - 12px; height: parent.height - 12px; mode: 0; }
+                            // the actual rendered layout (same pixel-exact pith-ui mirror
+                            // the editor shows) — reflects the real device screen
+                            Image {
+                                x: 6px;
+                                y: 6px;
+                                width: parent.width - 12px;
+                                height: parent.height - 12px;
+                                source: RaceLayout.preview-image;
+                                image-rendering: pixelated;
+                            }
                         }
                     }
                 }

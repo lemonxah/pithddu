@@ -93,7 +93,16 @@ pub fn to_zone_module(m: &ModSpec) -> ZoneModule {
             idx_of(&FMT_NAMES, &m.fmt_type)
         },
         base_idx: idx_of(&PALETTE_TOKENS, &m.base),
+        on_base_idx: idx_of(&PALETTE_TOKENS, &m.on_base),
+        base_color: pal_color(&m.base),
+        on_base_color: pal_color(&m.on_base),
     }
+}
+
+/// Resolve a palette token ("green") or "#rrggbb" to a Slint swatch colour.
+pub fn pal_color(token: &str) -> slint::Color {
+    let (r, g, b) = pith_core::format::Pal::from_str(token).rgb888();
+    slint::Color::from_rgb_u8(r, g, b)
 }
 
 pub fn push_zones(ui: &AppWindow, s: &State) {
@@ -346,11 +355,23 @@ pub fn push_editor_options(ui: &AppWindow, s: &State) {
     let kinds: Vec<SharedString> = KIND_OPTIONS.iter().map(|k| sstr(k)).collect();
     let palette: Vec<SharedString> = PALETTE_TOKENS.iter().map(|p| sstr(p)).collect();
     let fmts: Vec<SharedString> = FMT_NAMES.iter().map(|f| sstr(f)).collect();
+    let palette_colors: Vec<slint::Color> = PALETTE_TOKENS.iter().map(|p| pal_color(p)).collect();
     rl.set_field_options(model(fields));
     rl.set_kind_options(model(kinds));
     rl.set_palette_options(model(palette));
+    rl.set_palette_colors(model(palette_colors));
     rl.set_fmt_options(model(fmts));
+    push_theme_swatches(ui, s);
     let tracks: Vec<SharedString> = crate::trackmap::TRACK_NAMES.iter().map(|t| sstr(t)).collect();
     rl.set_map_tracks(model(tracks));
     rl.set_map_track_idx(crate::trackmap::track_index(&s.map_track));
+}
+
+/// Publish the saved custom swatches (hex strings + their resolved colours).
+pub fn push_theme_swatches(ui: &AppWindow, s: &State) {
+    let rl = ui.global::<RaceLayout>();
+    let hexes: Vec<SharedString> = s.custom_swatches.iter().map(|h| sstr(h)).collect();
+    let cols: Vec<slint::Color> = s.custom_swatches.iter().map(|h| pal_color(h)).collect();
+    rl.set_theme_swatch_hexes(model(hexes));
+    rl.set_theme_swatches(model(cols));
 }

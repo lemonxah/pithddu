@@ -28,6 +28,8 @@ fn main() {
     log::info!("pithddu boot — serial {serial}");
 
     // Restore PC-pushed config (pins, layout, buttons, car, brightness) from NVS.
+    // The LED task re-applies the saved car shift-light profile itself (see
+    // led::spawn); the dashboard also re-pushes the live @C on reconnect.
     state::init();
 
     // Bring up the composite USB device (PHY + TinyUSB + device task).
@@ -49,7 +51,8 @@ fn main() {
 
     let mut ticks: u32 = 0;
     loop {
-        usb::poll_cdc(); // drain SimHub telemetry on CDC (HID is callback-driven)
+        usb::poll_cdc(); // drain SimHub telemetry on CDC
+        usb::poll_hid(); // drain HID-OUT bytes here (big stack) — the callback only buffers
         usb::pump_log_tx(); // flush queued logs to the GUI during quiet periods
         ota::check_timeout();
 

@@ -24,7 +24,8 @@ pub struct ModSpec {
     pub label: String,
     pub fmt_type: String,
     pub unit: String,
-    pub base: String,
+    pub base: String,     // for a button: OFF-state colour
+    pub on_base: String,  // for a toggle button: ON-state colour
     pub scale: i32,
     pub size_pct: i32,
     pub rules: Vec<ColorRule>,
@@ -104,6 +105,7 @@ impl Default for ModSpec {
             fmt_type: String::new(),
             unit: String::new(),
             base: "white".to_string(),
+            on_base: "green".to_string(),
             scale: 0,
             size_pct: 0,
             rules: Vec::new(),
@@ -212,6 +214,12 @@ pub struct State {
     pub tabs: [Vec<String>; 2], // per-display tab page names (empty = display not tabbed)
     pub edit_tab: i32,       // tab page currently shown in the editor
     pub map_track: String,   // selected track whose outline the Map widget shows
+    pub map_learner: crate::trackmap::MapLearner, // self-learned outline from streamed car position
+    pub learned_map: Vec<u16>,        // baked learned outline (overrides bundled when non-empty)
+    pub map_pushed: bool,             // learned map for the current track already pushed
+    pub map_push_pending: bool,       // a fresh learned map is ready to push to the device
+    pub last_sim_frame: Option<std::time::Instant>, // when the plugin last fed us (gates the @T round-trip)
+    pub custom_swatches: Vec<String>, // saved colour-picker swatches ("#rrggbb")
     pub sel_elem: i32,       // selected element index within the selected widget (-1 = none)
     pub drag_origin: Option<(String, i32, i32, i32, i32)>, // (id,x,y,w,h) at gesture start
     pub presets: Vec<Preset>,
@@ -283,6 +291,12 @@ impl Default for State {
             tabs: [Vec::new(), Vec::new()],
             edit_tab: 0,
             map_track: "(none)".to_string(),
+            map_learner: crate::trackmap::MapLearner::default(),
+            learned_map: Vec::new(),
+            map_pushed: false,
+            map_push_pending: false,
+            last_sim_frame: None,
+            custom_swatches: Vec::new(),
             sel_elem: -1,
             drag_origin: None,
             presets: Vec::new(),

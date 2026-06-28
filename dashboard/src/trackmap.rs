@@ -38,6 +38,94 @@ fn ellipse(n: usize, rx: i32, ry: i32) -> Vec<u16> {
     v
 }
 
+// ---------------------------------------------------------------------------
+// Self-learned track map.
+//
+// Real circuits (Spa, Silverstone, …) aren't in the bundled list, so when the
+// sim streams a car position we learn the outline ourselves: bucket the world
+// X/Z by lap progress (track_pct), and once enough of the lap is covered, emit a
+// normalized closed polyline the device's Map widget renders. Keyed by track_pct
+// (not time) so the points stay correctly ordered regardless of sample rate.
+// ---------------------------------------------------------------------------
+
+/// Number of lap-progress buckets (≈ one point every 0.55% of the lap).
+pub const MAP_BUCKETS: usize = 180;
+
+#[derive(Clone)]
+pub struct MapLearner {
+    samples: Vec<Option<(i32, i32)>>, // per-bucket world (x, z)
+    filled: usize,
+    /// Track this learner is currently mapping (so a track change resets it).
+    pub track: String,
+}
+
+impl Default for MapLearner {
+    fn default() -> Self {
+        Self { samples: vec![None; MAP_BUCKETS], filled: 0, track: String::new() }
+    }
+}
+
+impl MapLearner {
+    /// Start over for a new track.
+    pub fn reset(&mut self, track: &str) {
+        self.samples = vec![None; MAP_BUCKETS];
+        self.filled = 0;
+        self.track = track.to_string();
+    }
+
+    /// Record one position sample keyed by lap progress. Returns true if it filled
+    /// a previously-empty bucket (i.e. the map gained detail).
+    pub fn record(&mut self, track_pct: i32, x: i32, z: i32) -> bool {
+        // Ignore the all-zero frame a game sends before it's feeding position.
+        if track_pct <= 0 && x == 0 && z == 0 {
+            return false;
+        }
+        let b = ((track_pct.clamp(0, 1000) as usize) * MAP_BUCKETS / 1001).min(MAP_BUCKETS - 1);
+        let was_empty = self.samples[b].is_none();
+        self.samples[b] = Some((x, z));
+        if was_empty {
+            self.filled += 1;
+        }
+        was_empty
+    }
+
+    /// Enough of the lap is covered to push a usable outline.
+    pub fn complete(&self) -> bool {
+        self.filled >= MAP_BUCKETS * 7 / 10
+    }
+
+    /// Build a normalized closed outline (flat x,y in 0..=1000), aspect-preserved
+    /// and centred, Y flipped so the world's +Z reads as "up". Empty if too sparse.
+    pub fn outline(&self) -> Vec<u16> {
+        if self.filled < MAP_BUCKETS / 2 {
+            return Vec::new();
+        }
+        let pts: Vec<(i32, i32)> = self.samples.iter().filter_map(|s| *s).collect();
+        let (mut minx, mut maxx, mut minz, mut maxz) = (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
+        for &(x, z) in &pts {
+            minx = minx.min(x);
+            maxx = maxx.max(x);
+            minz = minz.min(z);
+            maxz = maxz.max(z);
+        }
+        let dx = (maxx - minx).max(1);
+        let dz = (maxz - minz).max(1);
+        let span = dx.max(dz) as i64; // uniform scale → no distortion
+        let ox = (span - dx as i64) / 2;
+        let oz = (span - dz as i64) / 2;
+        // Inset to ~3..=997 so the outline never touches the widget edge.
+        let mut out = Vec::with_capacity(pts.len() * 2);
+        for &(x, z) in &pts {
+            let nx = 3 + ((x - minx) as i64 + ox) * 994 / span;
+            let ny = (z - minz) as i64 + oz;
+            let ny = 3 + (994 - ny * 994 / span);
+            out.push(nx.clamp(0, 1000) as u16);
+            out.push(ny.clamp(0, 1000) as u16);
+        }
+        out
+    }
+}
+
 // Hand-made representative circuit loops (start/finish first, clockwise).
 #[rustfmt::skip]
 const CLUB: &[u16] = &[

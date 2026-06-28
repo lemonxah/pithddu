@@ -1,0 +1,10 @@
+/home/lemonxah/storage/git/pithddu/simhub-plugin/obj/Release/PithDdu.SimHubPlugin.csproj.AssemblyReference.cache
+/home/lemonxah/storage/git/pithddu/simhub-plugin/obj/Release/PithDdu.SimHubPlugin.GeneratedMSBuildEditorConfig.editorconfig
+/home/lemonxah/storage/git/pithddu/simhub-plugin/obj/Release/PithDdu.SimHubPlugin.AssemblyInfoInputs.cache
+/home/lemonxah/storage/git/pithddu/simhub-plugin/obj/Release/PithDdu.SimHubPlugin.AssemblyInfo.cs
+/home/lemonxah/storage/git/pithddu/simhub-plugin/obj/Release/PithDdu.SimHubPlugin.csproj.CoreCompileInputs.cache
+/home/lemonxah/storage/git/pithddu/simhub-plugin/obj/Release/PithDdu.SimHubPlugin.sourcelink.json
+/home/lemonxah/storage/git/pithddu/simhub-plugin/bin/Release/PithDdu.SimHubPlugin.dll
+/home/lemonxah/storage/git/pithddu/simhub-plugin/bin/Release/PithDdu.SimHubPlugin.pdb
+/home/lemonxah/storage/git/pithddu/simhub-plugin/obj/Release/PithDdu.SimHubPlugin.dll
+/home/lemonxah/storage/git/pithddu/simhub-plugin/obj/Release/PithDdu.SimHubPlugin.pdb

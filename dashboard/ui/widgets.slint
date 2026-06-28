@@ -1,5 +1,7 @@
 // Reusable styled primitives (HANDOFF.md §1 shape & spacing).
 import { Theme } from "theme.slint";
+import { AppState } from "models.slint";
+import { Slider } from "std-widgets.slint";
 
 // Uppercase tracked section label.
 export component SectionLabel inherits Text {
@@ -208,4 +210,231 @@ export component Dot inherits Rectangle {
     height: 7px;
     border-radius: 4px;
     background: tint;
+}
+
+// A ComboBox replacement whose popup opens UPWARD when it's too close to the
+// bottom of the window (the std ComboBox always drops down and gets clipped).
+// Drop-in: same model / current-index / selected(string) interface.
+export component FlipCombo inherits Rectangle {
+    in property <[string]> model;
+    in-out property <int> current-index;
+    in property <bool> enabled: true;
+    // mirrors std ComboBox.current-value (selected text) for callers that read it
+    out property <string> current-value: (root.current-index >= 0 && root.current-index < root.model.length) ? root.model[root.current-index] : "";
+    callback selected(string);
+    property <length> row-h: 28px;
+    property <length> pop-h: min(root.model.length * root.row-h + 8px, 240px);
+    height: 30px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: ta.has-hover ? Theme.line2 : Theme.line;
+    background: !root.enabled ? Theme.panel : (ta.has-hover ? Theme.elev : Theme.panel2);
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 4px;
+        Text {
+            text: (root.current-index >= 0 && root.current-index < root.model.length) ? root.model[root.current-index] : "";
+            color: root.enabled ? Theme.text : Theme.text3;
+            font-size: 13px;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        Text { text: "▾"; color: Theme.text3; font-size: 11px; vertical-alignment: center; }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { if (root.enabled) { pop.show(); } } }
+    pop := PopupWindow {
+        // flip up when opening downward would run off the bottom of the window
+        property <bool> up: root.absolute-position.y + root.height + root.pop-h > AppState.win-h;
+        x: 0;
+        y: pop.up ? -root.pop-h - 4px : root.height + 4px;
+        width: root.width;
+        height: root.pop-h;
+        Rectangle {
+            background: Theme.elev;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: Theme.line2;
+            Flickable {
+                viewport-height: col.preferred-height;
+                col := VerticalLayout {
+                    padding: 4px;
+                    for it[i] in root.model: Rectangle {
+                        height: root.row-h;
+                        border-radius: 5px;
+                        background: i == root.current-index ? Theme.accent-dim : (itm.has-hover ? Theme.panel : transparent);
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            Text {
+                                text: it;
+                                color: i == root.current-index ? Theme.accent : Theme.text;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                        itm := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.current-index = i;
+                                root.selected(it);
+                                pop.close();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Colour picker that replaces a palette dropdown: a swatch button which opens a
+// popup (flips up near the window bottom) offering the named palette, any saved
+// custom swatches, and full RGB sliders. Emits picked(name|"#rrggbb").
+export component ColorField inherits Rectangle {
+    in property <color> value;                  // current colour (the swatch fill)
+    in property <[string]> names;               // palette token names (parallel to swatches)
+    in property <[color]> swatches;             // palette swatch colours
+    in property <[color]> saved;                // saved custom swatch colours
+    in property <[string]> saved-hexes;         // "#rrggbb" parallel to `saved`
+    callback picked(string);                    // a palette name OR "#rrggbb"
+    callback save(string);                      // remember "#rrggbb" in the palette
+    property <int> r: 255;
+    property <int> g: 255;
+    property <int> b: 255;
+    property <[string]> hexd: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"];
+    function hx(v: int) -> string { return root.hexd[floor(v / 16)] + root.hexd[mod(v, 16)]; }
+    property <string> cur-hex: "#" + root.hx(root.r) + root.hx(root.g) + root.hx(root.b);
+    property <length> pop-h: 268px;
+    height: 30px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: ta.has-hover ? Theme.line2 : Theme.line;
+    background: ta.has-hover ? Theme.elev : Theme.panel2;
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 8px;
+        spacing: 8px;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 20px;
+                height: 20px;
+                border-radius: 4px;
+                background: root.value;
+                border-width: 1px;
+                border-color: Theme.line2;
+            }
+        }
+        Text { text: "colour"; color: Theme.text; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
+        Text { text: "▾"; color: Theme.text3; font-size: 11px; vertical-alignment: center; }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.r = round(root.value.red);
+            root.g = round(root.value.green);
+            root.b = round(root.value.blue);
+            pop.show();
+        }
+    }
+    pop := PopupWindow {
+        property <bool> up: root.absolute-position.y + root.height + root.pop-h > AppState.win-h;
+        x: 0;
+        y: pop.up ? -root.pop-h - 4px : root.height + 4px;
+        width: max(root.width, 248px);
+        height: root.pop-h;
+        Rectangle {
+            background: Theme.elev;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: Theme.line2;
+            VerticalLayout {
+                padding: 10px;
+                spacing: 7px;
+                Text { text: "PALETTE"; color: Theme.text3; font-size: 9px; letter-spacing: 0.5px; }
+                HorizontalLayout {
+                    spacing: 4px;
+                    for c[i] in root.swatches: Rectangle {
+                        width: 22px;
+                        height: 22px;
+                        border-radius: 4px;
+                        background: c;
+                        border-width: 1px;
+                        border-color: Theme.line2;
+                        TouchArea { mouse-cursor: pointer; clicked => { root.picked(root.names[i]); pop.close(); } }
+                    }
+                    Rectangle { }
+                }
+                if root.saved.length > 0: Text { text: "SAVED"; color: Theme.text3; font-size: 9px; letter-spacing: 0.5px; }
+                if root.saved.length > 0: HorizontalLayout {
+                    spacing: 4px;
+                    for c[i] in root.saved: Rectangle {
+                        width: 22px;
+                        height: 22px;
+                        border-radius: 4px;
+                        background: c;
+                        border-width: 1px;
+                        border-color: Theme.line2;
+                        TouchArea { mouse-cursor: pointer; clicked => { root.picked(root.saved-hexes[i]); pop.close(); } }
+                    }
+                    Rectangle { }
+                }
+                for ch in [
+                    { lbl: "R", v: root.r, col: Theme.red },
+                    { lbl: "G", v: root.g, col: Theme.green },
+                    { lbl: "B", v: root.b, col: Theme.blue },
+                ]: HorizontalLayout {
+                    spacing: 6px;
+                    Text { text: ch.lbl; width: 10px; color: ch.col; font-size: 11px; vertical-alignment: center; }
+                    Slider {
+                        horizontal-stretch: 1;
+                        minimum: 0;
+                        maximum: 255;
+                        value: ch.v;
+                        changed(v) => {
+                            if ch.lbl == "R" { root.r = round(v); }
+                            if ch.lbl == "G" { root.g = round(v); }
+                            if ch.lbl == "B" { root.b = round(v); }
+                        }
+                    }
+                    Text { text: ch.v; width: 28px; color: Theme.text2; font-size: 11px; vertical-alignment: center; horizontal-alignment: right; }
+                }
+                HorizontalLayout {
+                    spacing: 7px;
+                    Rectangle {
+                        width: 38px;
+                        border-radius: 5px;
+                        background: rgb(root.r, root.g, root.b);
+                        border-width: 1px;
+                        border-color: Theme.line2;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        Text { text: root.cur-hex; color: Theme.text2; font-family: Theme.mono-font; font-size: 12px; }
+                    }
+                    Rectangle {
+                        width: 44px;
+                        height: 26px;
+                        border-radius: 6px;
+                        background: svta.has-hover ? Theme.panel : Theme.panel2;
+                        border-width: 1px;
+                        border-color: Theme.line2;
+                        Text { text: "★"; color: Theme.amber; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
+                        svta := TouchArea { mouse-cursor: pointer; clicked => { root.save(root.cur-hex); } }
+                    }
+                    Rectangle {
+                        width: 56px;
+                        height: 26px;
+                        border-radius: 6px;
+                        background: useta.has-hover ? Theme.accent : Theme.accent-dim;
+                        Text { text: "Use"; color: Theme.accent-soft; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                        useta := TouchArea { mouse-cursor: pointer; clicked => { root.picked(root.cur-hex); pop.close(); } }
+                    }
+                }
+            }
+        }
+    }
 }

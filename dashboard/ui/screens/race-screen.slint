@@ -3,8 +3,8 @@
 // add from a per-zone palette, and the live 320×240 mirror reflects every change.
 import { Theme } from "../theme.slint";
 import { RaceLayout, Telemetry, PresetCard, ZoneModule, ModuleDef, RuleRow, DeviceCaps, NodeBox, Pt } from "../models.slint";
-import { Card, PrimaryButton, GhostButton, Dot } from "../widgets.slint";
-import { ComboBox, LineEdit, Button, Slider } from "std-widgets.slint";
+import { Card, PrimaryButton, GhostButton, Dot, FlipCombo, ColorField } from "../widgets.slint";
+import { LineEdit, Button, Slider } from "std-widgets.slint";
 
 // Edit panel for the selected module: field binding, label, format, color rules.
 component EditPanel inherits Card {
@@ -17,7 +17,7 @@ component EditPanel inherits Card {
             Text { text: RaceLayout.edit.kind; color: Theme.accent; font-family: Theme.mono-font; font-size: 11px; vertical-alignment: center; }
         }
         Text { text: "KIND"; color: Theme.text3; font-size: 10px; letter-spacing: 0.5px; }
-        ComboBox { model: RaceLayout.kind-options; current-index: RaceLayout.edit.kind-idx; enabled: !RaceLayout.widget-custom; selected(v) => { RaceLayout.set-mod-kind(v); } }
+        FlipCombo { model: RaceLayout.kind-options; current-index: RaceLayout.edit.kind-idx; enabled: !RaceLayout.widget-custom; selected(v) => { RaceLayout.set-mod-kind(v); } }
         // ---- button widget controls (HID push/toggle + optional state binding) ----
         if !RaceLayout.widget-custom && RaceLayout.edit.kind == "button": VerticalLayout {
             spacing: 7px;
@@ -38,21 +38,44 @@ component EditPanel inherits Card {
                 Button { text: "⊙ Push (hold)"; primary: !RaceLayout.edit.toggle; clicked => { RaceLayout.set-mod-toggle(false); } }
                 Button { text: "◉ Toggle"; primary: RaceLayout.edit.toggle; clicked => { RaceLayout.set-mod-toggle(true); } }
             }
-            VerticalLayout { spacing: 3px;
-                Text { text: "BASE COLOR"; color: Theme.text3; font-size: 10px; }
-                ComboBox { model: RaceLayout.palette-options; current-index: RaceLayout.edit.base-idx; selected(v) => { RaceLayout.set-mod-base(v); } }
+            HorizontalLayout {
+                spacing: 8px;
+                VerticalLayout { spacing: 3px; horizontal-stretch: 1;
+                    Text { text: "OFF COLOUR"; color: Theme.text3; font-size: 10px; }
+                    ColorField {
+                        value: RaceLayout.edit.base-color;
+                        names: RaceLayout.palette-options;
+                        swatches: RaceLayout.palette-colors;
+                        saved: RaceLayout.theme-swatches;
+                        saved-hexes: RaceLayout.theme-swatch-hexes;
+                        picked(v) => { RaceLayout.set-mod-base(v); }
+                        save(v) => { RaceLayout.save-theme-swatch(v); }
+                    }
+                }
+                VerticalLayout { spacing: 3px; horizontal-stretch: 1;
+                    Text { text: "ON COLOUR"; color: Theme.text3; font-size: 10px; }
+                    ColorField {
+                        value: RaceLayout.edit.on-base-color;
+                        names: RaceLayout.palette-options;
+                        swatches: RaceLayout.palette-colors;
+                        saved: RaceLayout.theme-swatches;
+                        saved-hexes: RaceLayout.theme-swatch-hexes;
+                        picked(v) => { RaceLayout.set-mod-on-base(v); }
+                        save(v) => { RaceLayout.save-theme-swatch(v); }
+                    }
+                }
             }
             VerticalLayout { spacing: 3px;
-                Text { text: "BIND STATE FIELD (optional — colour/value from game)"; color: Theme.text3; font-size: 10px; }
-                ComboBox { model: RaceLayout.field-options; current-index: RaceLayout.edit.field-idx; selected(v) => { RaceLayout.set-mod-field(v); } }
+                Text { text: "BIND STATE FIELD (optional — value > 0 = ON; value is not shown)"; color: Theme.text3; font-size: 10px; }
+                FlipCombo { model: RaceLayout.field-options; current-index: RaceLayout.edit.field-idx; selected(v) => { RaceLayout.set-mod-field(v); } }
             }
-            Text { text: "Use COLOR RULES below to colour the button by the bound value (e.g. wiper level / on-off)."; color: Theme.text3; font-size: 9px; wrap: word-wrap; }
+            Text { text: "Bind a field (e.g. headlights) and the button reflects the sim's on/off state. The label colour auto-contrasts the fill."; color: Theme.text3; font-size: 9px; wrap: word-wrap; }
         }
         // ---- standard data-widget editing — hidden for buttons + customised trees ----
         if !RaceLayout.widget-custom && RaceLayout.edit.kind != "button": VerticalLayout {
             spacing: 7px;
             Text { text: "DATA FIELD"; color: Theme.text3; font-size: 10px; letter-spacing: 0.5px; }
-            ComboBox { model: RaceLayout.field-options; current-index: RaceLayout.edit.field-idx; selected(v) => { RaceLayout.set-mod-field(v); } }
+            FlipCombo { model: RaceLayout.field-options; current-index: RaceLayout.edit.field-idx; selected(v) => { RaceLayout.set-mod-field(v); } }
             HorizontalLayout {
                 spacing: 8px;
                 VerticalLayout { spacing: 3px; horizontal-stretch: 1;
@@ -68,11 +91,19 @@ component EditPanel inherits Card {
                 spacing: 8px;
                 VerticalLayout { spacing: 3px; horizontal-stretch: 1;
                     Text { text: "FORMAT"; color: Theme.text3; font-size: 10px; }
-                    ComboBox { model: RaceLayout.fmt-options; current-index: RaceLayout.edit.fmt-idx; selected(v) => { RaceLayout.set-mod-fmt(v); } }
+                    FlipCombo { model: RaceLayout.fmt-options; current-index: RaceLayout.edit.fmt-idx; selected(v) => { RaceLayout.set-mod-fmt(v); } }
                 }
                 VerticalLayout { spacing: 3px; horizontal-stretch: 1;
                     Text { text: "BASE COLOR"; color: Theme.text3; font-size: 10px; }
-                    ComboBox { model: RaceLayout.palette-options; current-index: RaceLayout.edit.base-idx; selected(v) => { RaceLayout.set-mod-base(v); } }
+                    ColorField {
+                        value: RaceLayout.edit.base-color;
+                        names: RaceLayout.palette-options;
+                        swatches: RaceLayout.palette-colors;
+                        saved: RaceLayout.theme-swatches;
+                        saved-hexes: RaceLayout.theme-swatch-hexes;
+                        picked(v) => { RaceLayout.set-mod-base(v); }
+                        save(v) => { RaceLayout.save-theme-swatch(v); }
+                    }
                 }
             }
             VerticalLayout { spacing: 3px;
@@ -137,11 +168,11 @@ component EditPanel inherits Card {
                         spacing: 6px;
                         VerticalLayout { spacing: 2px;
                             Text { text: "ELEMENT TYPE"; color: Theme.text3; font-size: 9px; }
-                            ComboBox { model: RaceLayout.elem-kinds; current-index: e.kind-idx; selected(v) => { RaceLayout.set-elem-kind(v); } }
+                            FlipCombo { model: RaceLayout.elem-kinds; current-index: e.kind-idx; selected(v) => { RaceLayout.set-elem-kind(v); } }
                         }
                         VerticalLayout { spacing: 2px;
                             Text { text: "DATA FIELD"; color: Theme.text3; font-size: 9px; }
-                            ComboBox { model: RaceLayout.field-options; current-index: e.field-idx; selected(v) => { RaceLayout.set-elem-field(v); } }
+                            FlipCombo { model: RaceLayout.field-options; current-index: e.field-idx; selected(v) => { RaceLayout.set-elem-field(v); } }
                         }
                         HorizontalLayout { spacing: 6px;
                             VerticalLayout { spacing: 2px; horizontal-stretch: 1;
@@ -150,7 +181,7 @@ component EditPanel inherits Card {
                             }
                             VerticalLayout { spacing: 2px; width: 104px;
                                 Text { text: "COLOR"; color: Theme.text3; font-size: 9px; }
-                                ComboBox { model: RaceLayout.palette-options; current-index: e.base-idx; selected(v) => { RaceLayout.set-elem-base(v); } }
+                                FlipCombo { model: RaceLayout.palette-options; current-index: e.base-idx; selected(v) => { RaceLayout.set-elem-base(v); } }
                             }
                         }
                         HorizontalLayout { spacing: 6px;
@@ -201,7 +232,7 @@ component EditPanel inherits Card {
             // add element
             HorizontalLayout {
                 spacing: 6px;
-                add-kind := ComboBox { model: RaceLayout.elem-kinds; horizontal-stretch: 1; }
+                add-kind := FlipCombo { model: RaceLayout.elem-kinds; horizontal-stretch: 1; }
                 Button { text: "+ Add element"; clicked => { RaceLayout.elem-add(add-kind.current-value); } }
             }
         }
@@ -261,9 +292,9 @@ component EditPanel inherits Card {
             }
             for r[i] in RaceLayout.edit-rules: HorizontalLayout {
                 spacing: 6px;
-                ComboBox { width: 60px; model: ["<", "<=", "==", ">=", ">"]; current-index: r.op-idx; selected(v) => { RaceLayout.set-rule(i, v, "\{r.v}", r.color); } }
+                FlipCombo { width: 60px; model: ["<", "<=", "==", ">=", ">"]; current-index: r.op-idx; selected(v) => { RaceLayout.set-rule(i, v, "\{r.v}", r.color); } }
                 LineEdit { width: 62px; text: "\{r.v}"; input-type: number; edited(t) => { RaceLayout.set-rule(i, r.op, t, r.color); } }
-                ComboBox { horizontal-stretch: 1; model: RaceLayout.palette-options; current-index: r.color-idx; selected(v) => { RaceLayout.set-rule(i, r.op, "\{r.v}", v); } }
+                FlipCombo { horizontal-stretch: 1; model: RaceLayout.palette-options; current-index: r.color-idx; selected(v) => { RaceLayout.set-rule(i, r.op, "\{r.v}", v); } }
                 Button { text: "✕"; clicked => { RaceLayout.remove-rule(i); } }
             }
         }
@@ -507,6 +538,7 @@ export component RaceScreen inherits Rectangle {
         }
         // split body
         HorizontalLayout {
+            vertical-stretch: 1; // fill above the full-width edit card below
             spacing: 18px;
             // live preview stage
             Rectangle {
@@ -573,6 +605,10 @@ export component RaceScreen inherits Rectangle {
                             pointer-event(e) => {
                                 // clicking the stage takes keyboard focus so Delete works
                                 key-scope.focus();
+                                // left-click on empty canvas (no widget grabbed it) deselects
+                                if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down) {
+                                    RaceLayout.node-select("");
+                                }
                                 if (e.button == PointerEventButton.middle) {
                                     if (e.kind == PointerEventKind.down) {
                                         pan-ta.panning = true;
@@ -712,6 +748,14 @@ export component RaceScreen inherits Rectangle {
                             }
                             Button { text: "+ Add tab"; clicked => { RaceLayout.tab-add(); } }
                         }
+                        Button {
+                            text: "⊞  Add 3×3 button grid";
+                            clicked => { RaceLayout.add-button-grid(); }
+                        }
+                        Text {
+                            text: "Fills this display/tab's content area (below the tab header) with 9 buttons.";
+                            color: Theme.text3; font-size: 9px; wrap: word-wrap;
+                        }
                     }
                 }
                 // track map outline picker (baked into Map widgets on push)
@@ -720,7 +764,7 @@ export component RaceScreen inherits Rectangle {
                         padding: 10px;
                         spacing: 6px;
                         Text { text: "TRACK MAP"; color: Theme.text2; font-family: Theme.display-font; font-size: 12px; font-weight: 600; letter-spacing: 1px; }
-                        ComboBox {
+                        FlipCombo {
                             model: RaceLayout.map-tracks;
                             current-index: RaceLayout.map-track-idx;
                             selected(v) => { RaceLayout.set-map-track(v); }
@@ -761,23 +805,30 @@ export component RaceScreen inherits Rectangle {
                         }
                     }
                 }
-                // selected-widget editor (or a hint)
-                if RaceLayout.sel-id != "": Flickable {
-                    vertical-stretch: 1;
-                    viewport-height: edit-col.preferred-height;
-                    edit-col := VerticalLayout { EditPanel { } }
+                // (the selected-widget editor moved below the preview — full width)
+                Rectangle { vertical-stretch: 1; }
+            }
+        }
+        // ===== selected-widget editor — full width below the preview, ALWAYS
+        // present (fixed height) so selecting/deselecting doesn't shift the layout.
+        // Only the contents swap: the editor when something is selected, else a hint.
+        Rectangle {
+            height: 260px;
+            if RaceLayout.sel-id != "": Flickable {
+                viewport-height: edit-col.preferred-height;
+                // Re-instantiate the panel whenever the selection changes so every
+                // field re-reads the new widget's values (a persistent panel can keep
+                // stale text in fields the user has edited). The key is the sel-id.
+                edit-col := VerticalLayout {
+                    for _sel in [RaceLayout.sel-id]: EditPanel { }
                 }
-                if RaceLayout.sel-id == "": Rectangle {
-                    vertical-stretch: 1;
-                    Text {
-                        text: "Select a widget on the canvas to edit it,\nor add one above.";
-                        color: Theme.text3;
-                        font-size: 12px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        wrap: word-wrap;
-                    }
-                }
+            }
+            if RaceLayout.sel-id == "": Text {
+                text: "Select a widget on the canvas to edit it, or add one from the panel on the right.";
+                color: Theme.text3;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
             }
         }
     }

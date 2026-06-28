@@ -145,7 +145,9 @@ export struct ZoneModule {
     toggle: bool, hid: int,
     page: int,   // tab page this node is on (when the display is tabbed)
     // option-list indices for ComboBox current-index (Slint ignores current-value writes)
-    kind-idx: int, field-idx: int, fmt-idx: int, base-idx: int,
+    kind-idx: int, field-idx: int, fmt-idx: int, base-idx: int, on-base-idx: int,
+    // resolved swatch colours for the colour-picker fields (named or custom RGB)
+    base-color: color, on-base-color: color,
 }
 
 // One freeform node overlay drawn on top of the pith-ui preview image. The
@@ -219,6 +221,9 @@ export global RaceLayout {
     in-out property <[string]> field-options: [];       // bindable telemetry fields
     in-out property <[string]> kind-options: [];
     in-out property <[string]> palette-options: [];
+    in-out property <[color]> palette-colors: [];        // swatch colours parallel to palette-options
+    in-out property <[color]> theme-swatches: [];        // saved custom colours (swatch)
+    in-out property <[string]> theme-swatch-hexes: [];   // "#rrggbb" parallel to theme-swatches
     in-out property <[string]> fmt-options: [];
 
     callback select-preset(int);
@@ -235,7 +240,9 @@ export global RaceLayout {
     callback set-mod-label(string);
     callback set-mod-unit(string);
     callback set-mod-fmt(string);
-    callback set-mod-base(string);
+    callback set-mod-base(string);      // accepts a palette name OR "#rrggbb"
+    callback set-mod-on-base(string);   // accepts a palette name OR "#rrggbb"
+    callback save-theme-swatch(string); // remember a custom "#rrggbb" in the palette
     callback set-mod-size(int);
     callback set-mod-toggle(bool);   // button node: latch vs momentary
     callback set-mod-hid(int);       // button node: HID joystick button 1..32
@@ -247,6 +254,7 @@ export global RaceLayout {
     // --- freeform editor ---
     callback node-select(string /*id*/);
     callback node-add(string /*type*/);                 // add a node to the current display
+    callback add-button-grid();                         // 3×3 buttons filling the tab's content area
     callback node-remove(string /*id*/);
     callback delete-selected();                         // Delete key: drop the selected element, else the selected widget
     callback node-drag-start(string /*id*/);            // begin a move/resize gesture
@@ -455,6 +463,7 @@ export global AppState {
     in property <string> serial: "";       // device serial number (from @CAP)
     in property <string> sync-status: "";  // transient feedback for the "Sync device" pull
     in-out property <int> units: 0;        // 0 KM/H, 1 MPH
+    in-out property <length> win-h;        // live window height (so popups can flip near the bottom)
 
     callback connect();
     callback disconnect();

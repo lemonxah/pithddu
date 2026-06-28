@@ -170,6 +170,26 @@ macro_rules! blit {
     }};
 }
 
+/// Stream ONLY the rectangle (x0,y0)-(x1,y1) inclusive — used so a small change
+/// (e.g. the rev strip) pushes a few KB over SPI instead of the whole ~300 KB
+/// frame. The pixels are gathered row-major within the window.
+macro_rules! blit_rect {
+    ($disp:expr, $fb:expr, $x0:expr, $y0:expr, $x1:expr, $y1:expr) => {{
+        let (x0, y0, x1, y1) = ($x0.max(0), $y0.max(0), $x1.min(ui::W - 1), $y1.min(ui::H - 1));
+        if x1 >= x0 && y1 >= y0 {
+            let w = $fb.w;
+            let mut buf: Vec<Rgb565> = Vec::with_capacity(((x1 - x0 + 1) * (y1 - y0 + 1)) as usize);
+            for yy in y0..=y1 {
+                let base = (yy * w) as usize;
+                for xx in x0..=x1 {
+                    buf.push($fb.data[base + xx as usize]);
+                }
+            }
+            let _ = $disp.set_pixels(x0 as u16, y0 as u16, x1 as u16, y1 as u16, buf.into_iter());
+        }
+    }};
+}
+
 impl OriginDimensions for FrameBuf {
     fn size(&self) -> Size {
         Size::new(self.w as u32, self.h as u32)
@@ -231,7 +251,9 @@ const X_MIN: i32 = 300;
 const X_MAX: i32 = 3900;
 const Y_MIN: i32 = 3900;
 const Y_MAX: i32 = 300;
-const Z_THRESH: u16 = 400;
+// Combined-pressure threshold for z = z1 + 4095 - z2 (idle ≈ 0, a press is 100s+).
+// Z1 alone was position-dependent and missed firm presses near some corners.
+const Z_PRESS: i32 = 250;
 
 /// Shared DC pin (one GPIO drives both panels). The display task is single-
 /// threaded, so Rc<RefCell> is sufficient.
@@ -263,23 +285,27 @@ fn xpt_read<S: embedded_hal::spi::SpiDevice>(dev: &mut S, cmd: u8) -> u16 {
 
 /// When DIAG is on, periodically log raw touch reads so a dead touch panel can be
 /// diagnosed over serial (idle baseline + any press). Set false once it works.
-const TOUCH_DIAG: bool = true;
+const TOUCH_DIAG: bool = false;
 static TOUCH_DIAG_TICK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Read the touch panel; returns screen coords if pressed.
 fn read_touch<S: embedded_hal::spi::SpiDevice>(dev: &mut S) -> Option<(i32, i32)> {
-    let z1 = xpt_read(dev, 0xB0);
+    // Combined pressure: Z1 rises and Z2 falls under touch, so z = z1 + 4095 - z2
+    // is robust across the whole panel (Z1 alone read low in some corners).
+    let z1 = xpt_read(dev, 0xB0) as i32;
+    let z2 = xpt_read(dev, 0xC0) as i32;
     let rx = xpt_read(dev, 0xD0) as i32; // X
     let ry = xpt_read(dev, 0x90) as i32; // Y
+    let z = z1 + 4095 - z2;
     if TOUCH_DIAG {
-        // Log every ~64th idle poll (baseline), and every read that crosses the
-        // pressure threshold (a real touch) — so we can see if z1/rx/ry move.
+        // Log every ~48th idle poll (baseline) + every press, so a dead spot shows
+        // its actual z/z1/z2 (is it really low pressure, or a mapping/clamp issue?).
         let n = TOUCH_DIAG_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if z1 >= Z_THRESH || n % 64 == 0 {
-            log::warn!("touch raw: z1={z1} rx={rx} ry={ry} (thresh={Z_THRESH})");
+        if z >= Z_PRESS || n % 48 == 0 {
+            log::warn!("touch raw: z={z} z1={z1} z2={z2} rx={rx} ry={ry} (thr={Z_PRESS})");
         }
     }
-    if z1 < Z_THRESH {
+    if z < Z_PRESS {
         return None;
     }
     // Normalise to 0..1000 in the panel-native touch axes…
@@ -348,7 +374,9 @@ fn display_task() {
         }
     };
 
-    let lcd_cfg = SpiConfig::new().baudrate(40.MHz().into());
+    // 60 MHz: stable on these panels (80 MHz showed artifacts) and still ~1.5x
+    // faster per-frame SPI than the original 40 MHz.
+    let lcd_cfg = SpiConfig::new().baudrate(60.MHz().into());
     let touch_cfg = SpiConfig::new().baudrate(2.MHz().into());
 
     let dc = SharedDc(Rc::new(RefCell::new(
@@ -392,14 +420,16 @@ fn display_task() {
 
     let mut mode = RaceMode::Race;
     let mut last_touch_ms = now_ms();
-    let mut page: usize = 0;
-    let mut toggle_on = [false; 32];
     let mut prev_btn_down = false;
     let mut prev_d1_down = false;
     // Push (momentary) UiDoc buttons currently held down per panel, so we can send
     // the HID button-up when the finger lifts (true hold, not a fixed pulse).
     let mut held_race: Option<usize> = None;
     let mut held_side: Option<usize> = None;
+    // The button currently under the finger per panel (any type) — drives the
+    // momentary press highlight, separate from the latched toggle/HID state.
+    let mut touched_race: Option<usize> = None;
+    let mut touched_side: Option<usize> = None;
     // active tab page per panel (for tabbed screens)
     let mut race_tab: u8 = 0;
     let mut side_tab: u8 = 0;
@@ -416,6 +446,9 @@ fn display_task() {
     // (tracked via ui_ver), so the hot loop never re-parses or re-clones it.
     let mut race_cache = pith_ui::RenderCache::new();
     let mut side_cache = pith_ui::RenderCache::new();
+    // Reused each frame: the per-node dirty rects to blit (scattered changes blit
+    // individually, not as one near-full-screen union — keeps the loop fast).
+    let mut dirty_rects: Vec<(i32, i32, i32, i32)> = Vec::new();
     let mut local_doc: Option<pith_ui::UiDoc> = state::with(|s| s.ui_doc.clone());
     let mut last_ui_ver = state::with(|s| s.ui_ver);
     let mut last_mode = mode;
@@ -450,6 +483,11 @@ fn display_task() {
             let _ = disp2.set_orientation(o);
         }
 
+        // Parse any pending pushed UiDoc here, on this task's larger (12 KB) stack —
+        // the typed deserialization overflows the 4 KB USB task that received it.
+        if state::with(|s| s.pending_ui.is_some()) {
+            state::with(|s| s.apply_pending_ui());
+        }
         // Refresh the cached pith-ui layout only when the dashboard pushes a new one,
         // and force a full repaint of both panels on the next frame.
         let cur_ver = state::with(|s| s.ui_ver);
@@ -460,10 +498,8 @@ fn display_task() {
             side_cache.invalidate();
         }
 
-        // Parse the pushed layouts each frame (cheap; could cache on change).
+        // The legacy @RS race JSON is the fallback when no pith-ui UiDoc is present.
         let race_json = state::with(|s| s.race_json.clone());
-        let btn_json = state::with(|s| s.buttons_json.clone());
-        let buttons = ui::parse_buttons(&btn_json).unwrap_or_default();
 
         // --- touch: race panel (UiDoc buttons / config nav / slider / sim / reboot) ---
         let race_touch = if race_is_1 { read_touch(&mut t1) } else { read_touch(&mut t2) };
@@ -499,10 +535,10 @@ fn display_task() {
                                     race_cache.invalidate();
                                 }
                             } else {
-                                ui_button_down(scr, race_tab as i32, tx, ty, &mut held_race, &mut toggle_on);
+                                ui_button_down(scr, race_tab as i32, tx, ty, &mut held_race, &mut touched_race);
                             }
                         } else {
-                            ui_button_down(scr, -1, tx, ty, &mut held_race, &mut toggle_on);
+                            ui_button_down(scr, -1, tx, ty, &mut held_race, &mut touched_race);
                         }
                     }
                 }
@@ -512,6 +548,7 @@ fn display_task() {
                 if let Some(b) = held_race.take() {
                     hid::set(b, false); // release a held push button
                 }
+                touched_race = None; // finger up — clear the press highlight
             }
         }
         if mode == RaceMode::Config && now - last_touch_ms > 8000 {
@@ -534,20 +571,13 @@ fn display_task() {
                 None => side_fade = side_fade.saturating_sub(1),
             }
         }
-        // Prefer UiDoc buttons placed on display 1; fall back to the legacy button box.
-        let has_side_ui = local_doc
+        // Display 1 is a freeform pith-ui screen uploaded from the editor (same as
+        // the race panel) — there's no legacy button box anymore.
+        if let Some(scr) = local_doc
             .as_ref()
-            .map(|d| d.screens.iter().any(|s| s.display == 1))
-            .unwrap_or(false);
-        if has_side_ui {
-            if let Some(scr) = local_doc
-                .as_ref()
-                .and_then(|d| d.screens.iter().find(|s| s.display == 1))
-            {
-                ui_button_touch(scr, btn_touch, &mut prev_btn_down, &mut held_side, &mut toggle_on, &mut side_tab);
-            }
-        } else {
-            handle_button_touch(&buttons, &mut page, &mut toggle_on, &mut prev_btn_down, btn_touch);
+            .and_then(|d| d.screens.iter().find(|s| s.display == 1))
+        {
+            ui_button_touch(scr, btn_touch, &mut prev_btn_down, &mut held_side, &mut side_tab, &mut touched_side);
         }
         // Safety net: a held push button must release on finger-up even if the side
         // UiDoc was swapped out mid-press (otherwise the HID bit would stick on).
@@ -555,7 +585,19 @@ fn display_task() {
             if let Some(b) = held_side.take() {
                 hid::set(b, false);
             }
+            touched_side = None;
         }
+
+        // Render press-feedback mask (bit = hid-1) = the button currently under the
+        // finger on each panel. This drives BOTH a push button's lit fill and the
+        // momentary "touch registered" glow on every button type; a toggle's on/off
+        // colour comes from its bound field, not this mask, so the glow just flashes
+        // on press without marking the toggle state.
+        let active_race = touched_race.map(|b| 1u32 << b).unwrap_or(0);
+        let active_side = touched_side.map(|b| 1u32 << b).unwrap_or(0);
+        // The active car profile drives the on-screen RPM strip the same way it drives
+        // the hardware LEDs, so the two match (count, centering, colours, thresholds).
+        let car = crate::led::current_car();
 
         // A screen from the active UiDoc is selected by display index (0 = race
         // panel, 1 = side panel). Absent -> fall back to the legacy renderers.
@@ -563,87 +605,100 @@ fn display_task() {
         // --- render: side/button panel first (shared-bus ordering) ---
         {
             let fb = if race_is_1 { &mut fb2 } else { &mut fb1 };
+            let full = (0, 0, ui::W - 1, ui::H - 1);
+            dirty_rects.clear();
             if TOUCH_DIAG {
                 fb.render_touch_test(side_mark, side_fade, MARK_FADE);
                 if side_fade == 0 {
                     side_mark = None;
                 }
-            } else {
-                let side_scr = local_doc
-                    .as_ref()
-                    .and_then(|d| d.screens.iter().find(|s| s.display == 1));
-                if let Some(scr) = side_scr {
-                    if scr.tabs.is_empty() {
-                        pith_ui::render_screen_diff(scr, &t, now, &mut side_cache, fb);
-                    } else {
-                        // full repaint of the active tab page (simple button screen)
-                        pith_ui::render_tabbed(scr, side_tab, &t, now, fb);
-                    }
+                dirty_rects.push(full);
+            } else if let Some(scr) =
+                local_doc.as_ref().and_then(|d| d.screens.iter().find(|s| s.display == 1))
+            {
+                if scr.tabs.is_empty() {
+                    pith_ui::render_screen_dirty(scr, &t, now, active_side, &car, &mut side_cache, fb, &mut dirty_rects);
                 } else {
-                    ui::render_buttons(fb, &buttons, page, &t, &toggle_on);
+                    pith_ui::render_tabbed_dirty(scr, side_tab, &t, now, active_side, &car, &mut side_cache, fb, &mut dirty_rects);
                 }
-            }
-            if race_is_1 {
-                blit!(disp2, fb2);
             } else {
-                blit!(disp1, fb1);
+                // No second screen uploaded yet — prompt to add one in the editor.
+                ui::render_no_screen(fb);
+                dirty_rects.push(full);
+            }
+            for &(x0, y0, x1, y1) in &dirty_rects {
+                if race_is_1 {
+                    blit_rect!(disp2, fb2, x0, y0, x1, y1);
+                } else {
+                    blit_rect!(disp1, fb1, x0, y0, x1, y1);
+                }
             }
         }
         // --- render: race panel ---
         {
             let fb = if race_is_1 { &mut fb1 } else { &mut fb2 };
+            let full = (0, 0, ui::W - 1, ui::H - 1);
+            dirty_rects.clear();
             if TOUCH_DIAG {
                 fb.render_touch_test(race_mark, race_fade, MARK_FADE);
                 if race_fade == 0 {
                     race_mark = None;
                 }
+                dirty_rects.push(full);
             } else {
-            match mode {
-                RaceMode::Config => {
-                    let (b, sim, car) =
-                        state::with(|s| (s.brightness, s.sim_on, s.car_model.clone()));
-                    let heap_kb =
-                        (unsafe { esp_idf_svc::sys::esp_get_free_heap_size() } / 1024) as i32;
-                    let uptime_s = unsafe { esp_idf_svc::sys::esp_timer_get_time() } / 1_000_000;
-                    let info = ui::ConfigInfo {
-                        fw: env!("CARGO_PKG_VERSION"),
-                        board: option_env!("PITHDDU_BOARD").unwrap_or("xiao_s3"),
-                        serial: crate::device::serial(),
-                        car: &car,
-                        heap_kb,
-                        uptime_s,
-                        brightness: b,
-                        sim,
-                    };
-                    ui::render_config(fb, &info);
-                }
-                RaceMode::Race => {
-                    let race_scr = local_doc
-                        .as_ref()
-                        .and_then(|d| d.screens.iter().find(|s| s.display == 0));
-                    if let Some(scr) = race_scr {
-                        if scr.tabs.is_empty() {
-                            pith_ui::render_screen_diff(scr, &t, now, &mut race_cache, fb);
-                        } else {
-                            pith_ui::render_tabbed(scr, race_tab, &t, now, fb);
-                        }
-                    } else {
-                        let layout = ui::parse_race(&race_json).unwrap_or_default();
-                        ui::render_race(fb, &layout, &t, now);
+                match mode {
+                    RaceMode::Config => {
+                        let (b, sim, car) =
+                            state::with(|s| (s.brightness, s.sim_on, s.car_model.clone()));
+                        let heap_kb =
+                            (unsafe { esp_idf_svc::sys::esp_get_free_heap_size() } / 1024) as i32;
+                        let uptime_s = unsafe { esp_idf_svc::sys::esp_timer_get_time() } / 1_000_000;
+                        let info = ui::ConfigInfo {
+                            fw: env!("CARGO_PKG_VERSION"),
+                            board: option_env!("PITHDDU_BOARD").unwrap_or("xiao_s3"),
+                            serial: crate::device::serial(),
+                            car: &car,
+                            heap_kb,
+                            uptime_s,
+                            brightness: b,
+                            sim,
+                        };
+                        ui::render_config(fb, &info);
+                        dirty_rects.push(full);
                     }
-                    // discoverable tap-to-config affordance (drawn over the race UI)
-                    ui::render_config_hint(fb);
+                    RaceMode::Race => {
+                        let race_scr = local_doc
+                            .as_ref()
+                            .and_then(|d| d.screens.iter().find(|s| s.display == 0));
+                        if let Some(scr) = race_scr {
+                            if scr.tabs.is_empty() {
+                                pith_ui::render_screen_dirty(scr, &t, now, active_race, &car, &mut race_cache, fb, &mut dirty_rects);
+                            } else {
+                                pith_ui::render_tabbed_dirty(scr, race_tab, &t, now, active_race, &car, &mut race_cache, fb, &mut dirty_rects);
+                            }
+                        } else {
+                            let layout = ui::parse_race(&race_json).unwrap_or_default();
+                            ui::render_race(fb, &layout, &t, now);
+                            dirty_rects.push(full);
+                        }
+                        // discoverable tap-to-config affordance (drawn over the race UI).
+                        // Static, so it rides along on full repaints; no need to blit it.
+                        ui::render_config_hint(fb);
+                    }
                 }
             }
-            }
-            if race_is_1 {
-                blit!(disp1, fb1);
-            } else {
-                blit!(disp2, fb2);
+            for &(x0, y0, x1, y1) in &dirty_rects {
+                if race_is_1 {
+                    blit_rect!(disp1, fb1, x0, y0, x1, y1);
+                } else {
+                    blit_rect!(disp2, fb2, x0, y0, x1, y1);
+                }
             }
         }
 
-        thread::sleep(Duration::from_millis(33));
+        // Short yield only — with windowed dirty-blits an idle frame is nearly free,
+        // and active frames (rev strip moving) should refresh as fast as they can.
+        thread::sleep(Duration::from_millis(8));
     }
 }
 
@@ -662,36 +717,35 @@ fn handle_config_touch(mode: &mut RaceMode, tx: i32, ty: i32) {
 }
 
 /// Hit-test a down-edge tap against the `Button` nodes of a UiDoc screen and drive
-/// HID. Toggles latch (`toggle_on`); push buttons press now and record `held` so the
-/// caller can release them on finger-up. Returns true if a button consumed the tap.
+/// HID. Every button (toggle or push) sends a momentary press recorded in `held` so
+/// the caller releases it on finger-up. Returns true if a button consumed the tap.
 fn ui_button_down(
     scr: &pith_ui::Screen,
     active_page: i32, // -1 = all pages (untabbed); else only this tab page
     tx: i32,
     ty: i32,
     held: &mut Option<usize>,
-    toggle_on: &mut [bool; 32],
+    touched: &mut Option<usize>,
 ) -> bool {
     for node in &scr.nodes {
         if active_page >= 0 && node.page as i32 != active_page {
             continue;
         }
-        if let pith_ui::Kind::Button { hid, toggle, .. } = &node.kind {
-            let (hid, toggle) = (*hid, *toggle);
+        if let pith_ui::Kind::Button { hid, .. } = &node.kind {
+            let hid = *hid;
             if hid == 0 {
                 continue;
             }
             let bit = (hid as usize - 1).min(31);
             let r = &node.rect;
             if tx >= r.x && tx < r.x + r.w as i32 && ty >= r.y && ty < r.y + r.h as i32 {
-                if toggle {
-                    let on = !toggle_on[bit];
-                    toggle_on[bit] = on;
-                    hid::set(bit, on);
-                } else {
-                    hid::set(bit, true);
-                    *held = Some(bit);
-                }
+                // EVERY button (incl. "toggle") sends a MOMENTARY press: press now,
+                // release on finger-up. The game owns the toggle semantics and reports
+                // the resulting state via telemetry, which drives the button's colour —
+                // the device keeps NO toggle latch. `touched` drives the press glow.
+                *touched = Some(bit);
+                hid::set(bit, true);
+                *held = Some(bit);
                 return true;
             }
         }
@@ -700,14 +754,14 @@ fn ui_button_down(
 }
 
 /// Full press/release dispatch for UiDoc buttons on a panel (edge-tracked): a tap
-/// presses (toggle latches / push holds); lifting releases a held push button.
+/// presses (every button is a momentary press); lifting releases the held button.
 fn ui_button_touch(
     scr: &pith_ui::Screen,
     touch: Option<(i32, i32)>,
     prev_down: &mut bool,
     held: &mut Option<usize>,
-    toggle_on: &mut [bool; 32],
     tab: &mut u8,
+    touched: &mut Option<usize>,
 ) {
     let tabbed = !scr.tabs.is_empty();
     match touch {
@@ -722,7 +776,7 @@ fn ui_button_touch(
                     }
                 }
                 let active = if tabbed { *tab as i32 } else { -1 };
-                ui_button_down(scr, active, tx, ty, held, toggle_on);
+                ui_button_down(scr, active, tx, ty, held, touched);
             }
         }
         None => {
@@ -730,51 +784,11 @@ fn ui_button_touch(
             if let Some(b) = held.take() {
                 hid::set(b, false);
             }
+            *touched = None; // finger up — clear the press highlight
         }
     }
 }
 
-fn handle_button_touch(
-    buttons: &ui::Buttons,
-    page: &mut usize,
-    toggle_on: &mut [bool; 32],
-    prev_down: &mut bool,
-    touch: Option<(i32, i32)>,
-) {
-    match touch {
-        Some((tx, ty)) => {
-            if *prev_down {
-                return; // edge-triggered
-            }
-            *prev_down = true;
-            // tab bar?
-            if ty < ui::TABH {
-                let np = buttons.pages.len().max(1) as i32;
-                let tw = ui::W / np;
-                let p = (tx / tw).clamp(0, np - 1) as usize;
-                *page = p;
-                return;
-            }
-            if let Some(pg) = buttons.pages.get(*page) {
-                for b in pg {
-                    let r = ui::button_rect(b.hid % 8);
-                    if ui::hit(r, tx, ty) {
-                        if b.toggle {
-                            let on = !toggle_on[b.hid.min(31)];
-                            toggle_on[b.hid.min(31)] = on;
-                            hid::set(b.hid, on);
-                        } else {
-                            hid::pulse(b.hid);
-                        }
-                    }
-                }
-            }
-        }
-        None => {
-            *prev_down = false;
-        }
-    }
-}
 
 fn ota_pct() -> i32 {
     // ota module tracks progress internally; expose a coarse value.

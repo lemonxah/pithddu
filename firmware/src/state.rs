@@ -52,6 +52,10 @@ pub struct AppState {
     pub ui_doc: Option<pith_ui::UiDoc>, // active pith-ui layout (@UI)
     pub ui_json: String,      // last @UI push (echoed by @UG)
     pub ui_ver: u32,          // bumped on change -> dirty-rect cache invalidation
+    pub pending_ui: Option<String>, // raw @UI JSON awaiting parse on the display task
+                                    // (parsing on the 4 KB USB task overflows its stack)
+    pub editor_json: String,  // opaque editor layout blob (@EL), echoed by @EG so the
+                              // GUI can read its OWN full freeform layout back losslessly
     pub buttons_json: String, // last @BS push
     pub profile_json: String, // last @P push (dashboard rarely sends)
     pub car_json: String,     // last @C / @SL push
@@ -88,6 +92,8 @@ pub fn init() {
         ui_doc: None,
         ui_json: String::new(),
         ui_ver: 0,
+        pending_ui: None,
+        editor_json: String::new(),
         buttons_json: String::new(),
         profile_json: String::new(),
         car_json: String::new(),
@@ -121,16 +127,22 @@ pub fn with<R>(f: impl FnOnce(&mut AppState) -> R) -> R {
 impl AppState {
     fn get_str_owned(&self, key: &str) -> Option<String> {
         let nvs = self.nvs.as_ref()?;
-        let mut buf = vec![0u8; 8192];
-        match nvs.get_str(key, &mut buf) {
-            Ok(Some(s)) => Some(s.to_owned()),
+        // Stored as a blob (not str): NVS strings are capped at ~4000 bytes, which a
+        // real freeform layout / editor blob blows past. Blobs span pages.
+        let mut buf = vec![0u8; 32768];
+        match nvs.get_raw(key, &mut buf) {
+            Ok(Some(data)) => String::from_utf8(data.to_vec()).ok(),
             _ => None,
         }
     }
 
     fn set_str(&mut self, key: &str, val: &str) {
         if let Some(nvs) = self.nvs.as_mut() {
-            let _ = nvs.set_str(key, val);
+            // Blob, not str (see get_str_owned). Log failures — a full NVS partition
+            // would otherwise silently drop the layout and boot to factory defaults.
+            if let Err(e) = nvs.set_raw(key, val.as_bytes()) {
+                log::warn!("nvs set '{key}' ({} bytes) FAILED: {e}", val.len());
+            }
         }
     }
 
@@ -141,16 +153,19 @@ impl AppState {
             }
         }
         self.race_json = self.get_str_owned("racejson").unwrap_or_default();
+        self.editor_json = self.get_str_owned("edjson").unwrap_or_default();
         self.ui_json = self.get_str_owned("uijson").unwrap_or_default();
         if !self.ui_json.is_empty() {
-            self.ui_doc = serde_json::from_str(&self.ui_json).ok();
+            // Defer the typed parse to the display task (bigger stack) — same reason
+            // as @UI: parsing here on the main task can overflow its stack.
+            self.pending_ui = Some(self.ui_json.clone());
         }
         self.buttons_json = self.get_str_owned("btnsjson").unwrap_or_default();
         self.profile_json = self.get_str_owned("profjson").unwrap_or_default();
         self.car_json = self.get_str_owned("carjson").unwrap_or_default();
         if let Some(nvs) = self.nvs.as_ref() {
             if let Ok(Some(b)) = nvs.get_u8("bright") {
-                self.brightness = b.min(100);
+                self.brightness = b.clamp(5, 100); // floor at 5% (see set_brightness)
             }
             if let Ok(Some(n)) = nvs.get_u8("btnpages") {
                 self.button_pages = n;
@@ -205,16 +220,43 @@ impl AppState {
 
     /// Apply a pith-ui UiDoc (pushed as JSON via @UI). Parses + stores + persists,
     /// and bumps ui_ver so the display task invalidates its dirty-rect cache.
-    pub fn apply_ui(&mut self, json: &str) -> bool {
-        match serde_json::from_str::<pith_ui::UiDoc>(json) {
+    /// Accept a pushed UiDoc (@UI). The JSON is only stored + persisted here — the
+    /// actual typed parse is deferred to the display task via [`apply_pending_ui`],
+    /// because deserializing on the 4 KB USB task overflows its stack and reboots.
+    pub fn queue_ui(&mut self, json: &str) -> bool {
+        self.ui_json = json.to_owned();
+        self.pending_ui = Some(json.to_owned());
+        self.set_str("uijson", json);
+        true
+    }
+
+    /// Store the GUI's opaque editor-layout blob (@EL). The device never parses it;
+    /// it just persists + echoes it (@EG) so the editor round-trips losslessly.
+    pub fn apply_editor(&mut self, json: &str) -> bool {
+        self.editor_json = json.to_owned();
+        self.set_str("edjson", json);
+        true
+    }
+
+    /// Parse a pending UiDoc (called from the display task's larger stack). Returns
+    /// true if a doc was applied (so the caller can invalidate its render caches).
+    pub fn apply_pending_ui(&mut self) -> bool {
+        let Some(json) = self.pending_ui.take() else {
+            return false;
+        };
+        match serde_json::from_str::<pith_ui::UiDoc>(&json) {
             Ok(doc) => {
+                let screens = doc.screens.len();
+                let nodes: usize = doc.screens.iter().map(|s| s.nodes.len()).sum();
                 self.ui_doc = Some(doc);
-                self.ui_json = json.to_owned();
                 self.ui_ver = self.ui_ver.wrapping_add(1);
-                self.set_str("uijson", json);
+                log::info!("apply_ui ok: {} bytes, {} screens, {} nodes (ver {})", json.len(), screens, nodes, self.ui_ver);
                 true
             }
-            Err(_) => false,
+            Err(e) => {
+                log::warn!("apply_ui PARSE FAIL: {} bytes: {e}", json.len());
+                false
+            }
         }
     }
 
@@ -256,7 +298,9 @@ impl AppState {
     }
 
     pub fn set_brightness(&mut self, pct: i32) {
-        let b = pct.clamp(0, 100) as u8;
+        // Floor at 5%: at 0 the rev LEDs scale to fully black (c*0/100) and look
+        // "broken" even though everything works — never let it bottom out there.
+        let b = pct.clamp(5, 100) as u8;
         // Live brightness updates (GUI slider, on-screen slider) can arrive rapidly;
         // only touch NVS when the value actually changes so dragging doesn't wear flash.
         if b == self.brightness {

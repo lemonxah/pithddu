@@ -36,7 +36,7 @@ pub enum RuleOp {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Pal {
-    Bg = 0,
+    Bg,
     Panel,
     White,
     Dim,
@@ -46,6 +46,8 @@ pub enum Pal {
     Cyan,
     Blue,
     Purple,
+    /// Arbitrary custom colour (from the GUI colour picker / theme palette).
+    Rgb(u8, u8, u8),
 }
 
 pub const FMT_NAMES: [&str; 7] =
@@ -113,12 +115,57 @@ impl Pal {
             "cyan" => Pal::Cyan,
             "blue" => Pal::Blue,
             "purple" => Pal::Purple,
-            _ => Pal::White,
+            "white" => Pal::White,
+            // "#rrggbb" -> a custom colour; anything else -> White.
+            _ => parse_hex(s).map(|(r, g, b)| Pal::Rgb(r, g, b)).unwrap_or(Pal::White),
         }
     }
+    /// Lowercase token for the named colours; "custom" for an Rgb (use [`Pal::to_token`]
+    /// for the round-trippable form).
     pub fn as_str(self) -> &'static str {
-        PAL_NAMES[self as usize]
+        match self {
+            Pal::Bg => "bg",
+            Pal::Panel => "panel",
+            Pal::White => "white",
+            Pal::Dim => "dim",
+            Pal::Green => "green",
+            Pal::Amber => "amber",
+            Pal::Red => "red",
+            Pal::Cyan => "cyan",
+            Pal::Blue => "blue",
+            Pal::Purple => "purple",
+            Pal::Rgb(..) => "custom",
+        }
     }
+    /// 8-bit sRGB for this colour (matches the device `pal()` mapping). Lets the
+    /// GUI render an exact swatch for any palette entry, named or custom.
+    pub fn rgb888(self) -> (u8, u8, u8) {
+        match self {
+            Pal::Bg => (8, 10, 14),
+            Pal::Panel => (28, 32, 40),
+            Pal::White => (235, 238, 245),
+            Pal::Dim => (120, 128, 140),
+            Pal::Green => (40, 220, 90),
+            Pal::Amber => (255, 180, 40),
+            Pal::Red => (240, 60, 60),
+            Pal::Cyan => (40, 210, 230),
+            Pal::Blue => (60, 130, 255),
+            Pal::Purple => (180, 110, 255),
+            Pal::Rgb(r, g, b) => (r, g, b),
+        }
+    }
+}
+
+/// Parse "#rrggbb" (or bare "rrggbb") into (r, g, b). None if malformed.
+pub fn parse_hex(s: &str) -> Option<(u8, u8, u8)> {
+    let h = s.strip_prefix('#').unwrap_or(s);
+    if h.len() != 6 || !h.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let r = u8::from_str_radix(&h[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&h[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&h[4..6], 16).ok()?;
+    Some((r, g, b))
 }
 
 /// Format a raw telemetry int into a display string — the exact port of

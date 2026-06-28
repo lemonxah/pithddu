@@ -210,6 +210,11 @@ pub fn init(ui: &AppWindow, rt: &tokio::runtime::Runtime) -> Arc<Ctx> {
         let c = ctx.clone();
         move || crate::loops::game_loop(c)
     });
+    // SimHub-plugin telemetry receiver (TCP :28909 → device over HID).
+    rt.spawn_blocking({
+        let c = ctx.clone();
+        move || crate::loops::sim_listener_loop(c)
+    });
 
     ctx
 }

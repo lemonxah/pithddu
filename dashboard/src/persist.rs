@@ -148,8 +148,13 @@ pub fn race_layout_from_json(s: &mut State, j: &Value) {
         zones[z as usize].modules.push(m);
     }
     s.zones = zones;
-    // @RG returns the legacy zone layout; seed the freeform editor from it.
-    s.nodes = crate::catalog::zones_to_nodes(&s.zones);
+    // @RG only carries the legacy zone layout (NOT the freeform nodes, which live
+    // in the @UI UiDoc). Only seed the freeform editor from zones when it's empty —
+    // otherwise reading/syncing would clobber the user's freeform edits with the
+    // zone-derived default. (Full freeform round-trip is done via the editor echo.)
+    if s.nodes.is_empty() {
+        s.nodes = crate::catalog::zones_to_nodes(&s.zones);
+    }
 }
 
 fn rules_to_json(rules: &[ColorRule]) -> Vec<Value> {
@@ -206,7 +211,7 @@ fn mod_to_json(m: &ModSpec) -> Value {
     json!({
         "id": m.id, "templ": m.templ, "kind": m.kind, "field": m.field,
         "label": m.label, "fmt": m.fmt_type, "unit": m.unit, "scale": m.scale,
-        "base": m.base, "sz": m.size_pct, "enabled": m.enabled, "rules": rules_to_json(&m.rules),
+        "base": m.base, "on_base": m.on_base, "sz": m.size_pct, "enabled": m.enabled, "rules": rules_to_json(&m.rules),
         "x": m.x, "y": m.y, "w": m.w, "h": m.h, "disp": m.display,
         "dir": m.dir, "gap": m.gap, "toggle": m.toggle, "hid": m.hid, "page": m.page, "els": els,
     })
@@ -222,6 +227,7 @@ fn mod_from_json(j: &Value) -> ModSpec {
         unit: jstr(j, "unit", ""),
         scale: jint(j, "scale", 0) as i32,
         base: jstr(j, "base", "white"),
+        on_base: jstr(j, "on_base", "green"),
         size_pct: jint(j, "sz", 0) as i32,
         enabled: jbool(j, "enabled", true),
         rules: rules_from_json(j),
@@ -315,18 +321,71 @@ pub fn load_presets(s: &State) -> Option<(Vec<Preset>, i32)> {
 }
 
 pub fn save_race_layout(s: &State) {
+    let _ = std::fs::write(race_layout_path(), build_editor_layout_pretty(s));
+}
+
+/// The full editor layout as one JSON object (freeform nodes + zones + tabs).
+fn editor_layout_value(s: &State) -> Value {
     let nodes: Vec<Value> = s.nodes.iter().map(mod_to_json).collect();
-    let j = json!({
+    json!({
         "active": s.active_preset,
         "zones": zones_to_json(&s.zones),
         "nodes": nodes,
         "tabs": [s.tabs[0].clone(), s.tabs[1].clone()],
         "map_track": s.map_track,
-    });
-    let _ = std::fs::write(
-        race_layout_path(),
-        serde_json::to_string_pretty(&j).unwrap_or_default(),
-    );
+    })
+}
+fn build_editor_layout_pretty(s: &State) -> String {
+    serde_json::to_string_pretty(&editor_layout_value(s)).unwrap_or_default()
+}
+/// Compact editor layout blob — pushed to the device via @EL so the GUI can read
+/// its OWN full freeform layout back losslessly (the device just stores/echoes it).
+pub fn build_editor_layout_json(s: &State) -> String {
+    serde_json::to_string(&editor_layout_value(s)).unwrap_or_default()
+}
+
+/// Load a full editor layout (from @EG / a saved blob) back into State. Returns
+/// false if there's no usable `nodes` array (so the caller can keep the current one).
+pub fn apply_editor_layout_json(s: &mut State, j: &Value) -> bool {
+    let nodes = match j.get("nodes").and_then(|n| n.as_array()) {
+        Some(n) if !n.is_empty() => n,
+        _ => return false,
+    };
+    s.nodes = nodes.iter().map(mod_from_json).collect();
+    // fresh unique ids so they can't collide with the running uid counter
+    for m in &mut s.nodes {
+        m.id = format!("m{}", s.uid);
+        s.uid += 1;
+    }
+    if let Some(zones) = j.get("zones").and_then(|z| z.as_array()) {
+        let mut zs: Vec<Zone> = Vec::new();
+        for jz in zones {
+            let mut z = Zone {
+                key: jstr(jz, "key", ""),
+                title: jstr(jz, "title", ""),
+                modules: Vec::new(),
+            };
+            if let Some(mods) = jz.get("modules").and_then(|m| m.as_array()) {
+                for jm in mods {
+                    z.modules.push(mod_from_json(jm));
+                }
+            }
+            zs.push(z);
+        }
+        if !zs.is_empty() {
+            s.zones = zs;
+        }
+    }
+    if let Some(tabs) = j.get("tabs").and_then(|t| t.as_array()) {
+        for (i, tv) in tabs.iter().take(2).enumerate() {
+            s.tabs[i] = tv
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(|x| x.to_string())).collect())
+                .unwrap_or_default();
+        }
+    }
+    s.map_track = jstr(j, "map_track", "(none)");
+    true
 }
 
 /// Per-display tab names from a stored race layout (empty when not tabbed).

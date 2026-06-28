@@ -93,6 +93,7 @@ fn elem_kind(e: &ElemSpec, rev: u8, map: &[u16]) -> Kind {
             hid: e.hid.clamp(0, 32) as u8,
             field,
             rules: elem_rules(e),
+            on_color: Pal::Green,
         },
         _ => Kind::Value { field, fmt, scale: e.scale, unit: e.unit.clone(), base, rules: elem_rules(e), size, align, valign },
     }
@@ -125,12 +126,13 @@ fn kind_of(m: &ModSpec, rev: u8, map: &[u16]) -> Kind {
     if m.kind == "button" {
         return Kind::Button {
             label: if m.label.is_empty() { "BTN".into() } else { m.label.clone() },
-            color: base,
+            color: base, // OFF-state colour
             action: String::new(),
             toggle: m.toggle,
             hid: m.hid.clamp(0, 32) as u8,
             field,
             rules: rules_of(m),
+            on_color: Pal::from_str(if m.on_base.is_empty() { "green" } else { &m.on_base }),
         };
     }
     // RPM strip matches the physically installed rev-LED count.
@@ -157,7 +159,12 @@ fn alloc_box(el: El) -> Box<El> {
 /// Build a pith-ui `Screen` from the freeform nodes assigned to `display`.
 pub fn build_screen(s: &State, display: u8) -> Screen {
     let rev = s.led_rev.clamp(0, 48) as u8;
-    let map = crate::trackmap::outline_for(&s.map_track);
+    // Prefer the self-learned outline (real circuits) over the bundled placeholder.
+    let map = if !s.learned_map.is_empty() {
+        s.learned_map.clone()
+    } else {
+        crate::trackmap::outline_for(&s.map_track)
+    };
     let nodes: Vec<Node> = s
         .nodes
         .iter()
@@ -219,9 +226,9 @@ fn current_telemetry(s: &State) -> Telemetry {
 fn render_image(screen: &Screen, active_tab: u8, t: &Telemetry) -> slint::Image {
     let mut fb = pith_ui::Framebuffer::new(screen.w, screen.h);
     if screen.tabs.is_empty() {
-        pith_ui::render_screen(screen, t, 0, &mut fb);
+        pith_ui::render_screen(screen, t, 0, 0, &pith_ui::CarData::default(), &mut fb);
     } else {
-        pith_ui::render_tabbed(screen, active_tab, t, 0, &mut fb);
+        pith_ui::render_tabbed(screen, active_tab, t, 0, 0, &pith_ui::CarData::default(), &mut fb);
     }
     let mut buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(screen.w, screen.h);
     buf.make_mut_bytes().copy_from_slice(&fb.to_rgba8());

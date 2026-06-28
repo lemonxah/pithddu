@@ -151,6 +151,22 @@ pub fn apply_telemetry(ui: &AppWindow, s: &mut State, line: &str) {
     t.set_redline_active(s.telem[FIELD_RPM] >= maxr * 99 / 100);
     t.set_delta(s.telem[FIELD_DELTA_MS] as f32 / 10000.0);
     t.set_fuel(s.telem[FIELD_FUEL_DL] as f32 / 10.0);
+    // Self-learn the track map from the streamed car position — real circuits
+    // aren't in the bundled list. Flag a push the first time a lap is covered.
+    {
+        let tel = pith_core::registry::telemetry_from_fields(&s.telem);
+        if s.map_learner.record(tel.track_pct, tel.pos_x, tel.pos_z)
+            && s.map_learner.complete()
+            && !s.map_pushed
+        {
+            let outline = s.map_learner.outline();
+            if !outline.is_empty() {
+                s.learned_map = outline;
+                s.map_pushed = true;
+                s.map_push_pending = true;
+            }
+        }
+    }
     super::race::push_resolved(ui, s);
     super::uidoc::push_preview(ui, s);
 }

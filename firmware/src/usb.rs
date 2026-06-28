@@ -33,6 +33,10 @@ impl LineBuf {
 // Per-transport line accumulators so CDC telemetry and HID commands don't mix.
 static CDC_LINE: Mutex<LineBuf> = Mutex::new(LineBuf::new());
 static HID_LINE: Mutex<LineBuf> = Mutex::new(LineBuf::new());
+// Raw HID-OUT bytes buffered by the USB callback for the main task to process.
+// The callback runs on the small TinyUSB task; doing feed/dispatch/parse there
+// overflows its stack and crashes, so we only copy bytes here and drain on main.
+static HID_RX: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
 // HID reply channel (report id 2), chunked into 61-byte payloads.
 struct HidTx {
@@ -100,9 +104,25 @@ pub fn poll_cdc() {
     }
 }
 
+/// Drain HID-OUT bytes buffered by the callback and process them on the main task
+/// (big stack) — same path CDC uses. Called from the main loop alongside poll_cdc.
+pub fn poll_hid() {
+    let bytes = {
+        let mut b = HID_RX.lock().unwrap();
+        if b.is_empty() {
+            return;
+        }
+        std::mem::take(&mut *b)
+    };
+    feed(Transport::Hid, &bytes);
+}
+
 // ---- device -> Rust callbacks (called from the TinyUSB task) ----
 
 /// HID OUT on report id 2: `buf` = `[N][payload…]` (length byte then N bytes).
+/// Runs on the small TinyUSB task — do the MINIMUM here. OTA image bytes are
+/// timing-sensitive so they're fed inline; everything else is buffered for the
+/// main task (feed/dispatch/parse on the USB task overflows its stack → crash).
 #[no_mangle]
 pub extern "C" fn pith_on_hid_cmd(buf: *const u8, len: i32) {
     if buf.is_null() || len < 1 {
@@ -110,8 +130,17 @@ pub extern "C" fn pith_on_hid_cmd(buf: *const u8, len: i32) {
     }
     let data = unsafe { std::slice::from_raw_parts(buf, len as usize) };
     let n = (data[0] as usize).min(data.len() - 1);
-    if n > 0 {
-        feed(Transport::Hid, &data[1..1 + n]);
+    if n == 0 {
+        return;
+    }
+    let payload = &data[1..1 + n];
+    if crate::ota::ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
+        && crate::ota::feed(Transport::Hid, payload)
+    {
+        return;
+    }
+    if let Ok(mut b) = HID_RX.lock() {
+        b.extend_from_slice(payload);
     }
 }
 
@@ -224,8 +253,22 @@ fn dispatch(t: Transport, line: &str) {
         reply(t, &format!("OK {body}\n"));
         return;
     }
+    if line.starts_with("@EG") {
+        // Read back the GUI's editor-layout blob (full freeform layout round-trip).
+        let j = crate::state::with(|s| s.editor_json.clone());
+        let body = if j.is_empty() { "{}" } else { &j };
+        reply(t, &format!("OK {body}\n"));
+        return;
+    }
+    if let Some(rest) = line.strip_prefix("@EL") {
+        let ok = crate::state::with(|s| s.apply_editor(rest));
+        reply(t, if ok { "OK\n" } else { "ERR\n" });
+        return;
+    }
     if let Some(rest) = line.strip_prefix("@UI") {
-        let ok = crate::state::with(|s| s.apply_ui(rest));
+        // Only queue the raw JSON here (USB task, 4 KB stack). The display task
+        // does the heavy typed parse on its larger stack.
+        let ok = crate::state::with(|s| s.queue_ui(rest));
         reply(t, if ok { "OK\n" } else { "ERR\n" });
         return;
     }
@@ -284,7 +327,15 @@ fn dispatch(t: Transport, line: &str) {
         reply(t, "OK\n"); // unknown @-command: ack
         return;
     }
-    // Otherwise: a SimHub '$' telemetry frame. Sim mode overrides real telemetry.
+    // Otherwise: a SimHub '$' telemetry frame. Both transports now dispatch on the
+    // main task (CDC via poll_cdc, HID via poll_hid), so parse inline.
+    let _ = t;
+    ingest_telem_line(line);
+}
+
+/// Parse one '$' telemetry frame into TELEM (sim mode overrides real telemetry).
+/// MUST run on a big-stack task (main / display) — never the USB callback task.
+pub fn ingest_telem_line(line: &str) {
     if let Some(tel) = simhub::parse_line(line) {
         if !crate::state::with(|s| s.sim_on) {
             *TELEM.lock().unwrap() = tel;

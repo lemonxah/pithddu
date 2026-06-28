@@ -6,7 +6,7 @@
 use embedded_graphics::{
     pixelcolor::Rgb565,
     prelude::*,
-    primitives::{Circle, PrimitiveStyle, Rectangle, RoundedRectangle},
+    primitives::{Circle, PrimitiveStyle, Rectangle, RoundedRectangle, Triangle},
 };
 use u8g2_fonts::{
     fonts,
@@ -35,6 +35,7 @@ pub fn pal(p: Pal) -> Rgb565 {
         Pal::Cyan => rgb(40, 210, 230),
         Pal::Blue => rgb(60, 130, 255),
         Pal::Purple => rgb(180, 110, 255),
+        Pal::Rgb(r, g, b) => rgb(r, g, b),
     }
 }
 pub fn rgb(r: u8, g: u8, b: u8) -> Rgb565 {
@@ -315,102 +316,25 @@ fn draw_module<D: DrawTarget<Color = Rgb565>>(
     }
 }
 
-// ---- button box (parsed from @BS) ----
-pub struct Button {
-    pub label: String,
-    pub toggle: bool,
-    pub color: Rgb565,
-    pub sync: bool,
-    pub field: usize,
-    pub hid: usize,
-}
-#[derive(Default)]
-pub struct Buttons {
-    pub pages: Vec<Vec<Button>>,
-}
 
-pub fn parse_buttons(json: &str) -> Option<Buttons> {
-    let v: serde_json::Value = serde_json::from_str(json).ok()?;
-    let pages = v.get("pages")?.as_array()?;
-    let mut out = Buttons::default();
-    for (pi, page) in pages.iter().enumerate() {
-        let mut pg = Vec::new();
-        if let Some(btns) = page.as_array() {
-            for (j, b) in btns.iter().enumerate() {
-                let color = b
-                    .get("color")
-                    .and_then(|x| x.as_str())
-                    .and_then(|s| u32::from_str_radix(s.trim_start_matches('#'), 16).ok())
-                    .map(rgb888)
-                    .unwrap_or_else(|| rgb888(0x00E5A0));
-                pg.push(Button {
-                    label: b.get("label").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                    toggle: b.get("kind").and_then(|x| x.as_str()) == Some("toggle"),
-                    color,
-                    sync: b.get("sync").and_then(|x| x.as_bool()).unwrap_or(false),
-                    field: b.get("field").and_then(|x| x.as_str()).map(field_id_from_str).unwrap_or(0),
-                    hid: pi * 8 + j,
-                });
-            }
-        }
-        out.pages.push(pg);
-    }
-    Some(out)
-}
-
-pub const TABH: i32 = 32;
-const GRID_COLS: i32 = 3;
-const GRID_ROWS: i32 = 2;
-
-/// Rect of button `idx` on the side screen (below the tab bar), 3x2 grid.
-pub fn button_rect(idx: usize) -> (i32, i32, i32, i32) {
-    let m = 8;
-    let gw = (W - m * (GRID_COLS + 1)) / GRID_COLS;
-    let gh = (H - TABH - m * (GRID_ROWS + 1)) / GRID_ROWS;
-    let col = idx as i32 % GRID_COLS;
-    let row = idx as i32 / GRID_COLS;
-    (m + col * (gw + m), TABH + m + row * (gh + m), gw, gh)
-}
-
-pub fn render_buttons<D: DrawTarget<Color = Rgb565>>(
-    d: &mut D, buttons: &Buttons, page: usize, t: &Telemetry, toggle_on: &[bool; 32],
-) {
+// ---- "no screen yet" placeholder ----
+/// Drawn on a panel with no pith-ui screen yet — prompts the user to upload one
+/// for this display in the editor (the legacy @BS button box was removed).
+pub fn render_no_screen<D: DrawTarget<Color = Rgb565>>(d: &mut D) {
     let _ = d.clear(C_BG);
-    // tab bar
-    let np = buttons.pages.len().max(1) as i32;
-    let tw = W / np;
-    for p in 0..np {
-        let on = p as usize == page;
-        text(d, &format!("P{}", p + 1), p * tw + tw / 2, TABH / 2, 12,
-             if on { pal(Pal::White) } else { pal(Pal::Dim) },
-             HorizontalAlignment::Center, VerticalPosition::Center);
-        if on {
-            fill_rect(d, p * tw + 8, TABH - 3, tw - 16, 3, pal(Pal::Cyan));
-        }
-    }
-    if let Some(pg) = buttons.pages.get(page) {
-        for b in pg {
-            let (x, y, w, h) = button_rect(b.hid % 8);
-            let lit = if b.sync && b.field != 0 {
-                field_value(t, b.field) > 0
-            } else {
-                b.toggle && toggle_on[b.hid.min(31)]
-            };
-            let body = if lit { b.color } else { pal(Pal::Panel) };
-            fill_round(d, x, y, w, h, 8, body);
-            text(d, &b.label, x + w / 2, y + h / 2, 14, pal(Pal::White),
-                 HorizontalAlignment::Center, VerticalPosition::Center);
-        }
-    }
+    text(d, "No screen", W / 2, H / 2 - 12, 20, pal(Pal::Dim),
+         HorizontalAlignment::Center, VerticalPosition::Center);
+    text(d, "Add a layout for this display in the editor", W / 2, H / 2 + 14, 12, pal(Pal::Dim),
+         HorizontalAlignment::Center, VerticalPosition::Center);
 }
 
 // ---- config screen ----
-// Tapping this corner of the race panel opens the on-device config screen.
-pub const CONFIG_HOTSPOT: (i32, i32, i32, i32) = (0, 0, 86, 56);
-pub const SLD: (i32, i32, i32, i32) = (40, 150, 400, 40); // brightness slider
-pub const SIM_BTN: (i32, i32, i32, i32) = (40, 262, 180, 46);
-pub const RBT_BTN: (i32, i32, i32, i32) = (260, 262, 180, 46);
-pub const BACK_BTN: (i32, i32, i32, i32) = (20, 16, 120, 46);
+// A settings-cog affordance in the BOTTOM-LEFT opens the on-device config screen.
+pub const CONFIG_HOTSPOT: (i32, i32, i32, i32) = (0, H - 56, 86, 56);
+pub const SLD: (i32, i32, i32, i32) = (40, 205, 400, 36);    // brightness slider (below the info block)
+pub const SIM_BTN: (i32, i32, i32, i32) = (288, 62, 172, 46); // right column, top
+pub const RBT_BTN: (i32, i32, i32, i32) = (288, 116, 172, 46);// right column, below SIM
+pub const BACK_BTN: (i32, i32, i32, i32) = (20, 262, 60, 46); // bottom-left back-arrow icon
 
 /// Stats shown on the device config screen.
 pub struct ConfigInfo<'a> {
@@ -424,18 +348,44 @@ pub struct ConfigInfo<'a> {
     pub sim: bool,
 }
 
-/// A small "CFG" affordance drawn in the race panel's top-left corner so the
+/// A small settings-cog affordance in the race panel's BOTTOM-LEFT corner so the
 /// tap-to-open config gesture is discoverable. Drawn over the race render each frame.
 pub fn render_config_hint<D: DrawTarget<Color = Rgb565>>(d: &mut D) {
-    fill_round(d, 4, 4, 44, 18, 4, pal(Pal::Panel));
-    text(d, "CFG", 4 + 22, 4 + 9, 11, pal(Pal::Dim), HorizontalAlignment::Center, VerticalPosition::Center);
+    let cx = 24;
+    let cy = H - 24;
+    let body = pal(Pal::Dim);
+    // eight teeth around the rim
+    for i in 0..8 {
+        let a = i as f32 * core::f32::consts::FRAC_PI_4;
+        let tx = cx + (a.cos() * 13.0) as i32;
+        let ty = cy + (a.sin() * 13.0) as i32;
+        fill_round(d, tx - 3, ty - 3, 6, 6, 1, body);
+    }
+    // gear body + centre hole
+    let _ = Circle::new(Point::new(cx - 10, cy - 10), 20)
+        .into_styled(PrimitiveStyle::with_fill(body))
+        .draw(d);
+    let _ = Circle::new(Point::new(cx - 4, cy - 4), 8)
+        .into_styled(PrimitiveStyle::with_fill(C_BG))
+        .draw(d);
 }
 
 pub fn render_config<D: DrawTarget<Color = Rgb565>>(d: &mut D, info: &ConfigInfo) {
     let _ = d.clear(C_BG);
+    text(d, "PITH DDU - CONFIG", W / 2, 26, 16, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
+    // back-arrow icon button at the bottom-left to exit config
     fill_round(d, BACK_BTN.0, BACK_BTN.1, BACK_BTN.2, BACK_BTN.3, 6, pal(Pal::Panel));
-    text(d, "< RACE", BACK_BTN.0 + BACK_BTN.2 / 2, BACK_BTN.1 + BACK_BTN.3 / 2, 14, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
-    text(d, "PITH DDU - CONFIG", W / 2, 32, 16, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
+    {
+        let cy = BACK_BTN.1 + BACK_BTN.3 / 2;
+        let cx = BACK_BTN.0 + BACK_BTN.2 / 2;
+        let _ = Triangle::new(
+            Point::new(cx - 9, cy),
+            Point::new(cx + 6, cy - 11),
+            Point::new(cx + 6, cy + 11),
+        )
+        .into_styled(PrimitiveStyle::with_fill(pal(Pal::White)))
+        .draw(d);
+    }
 
     // --- device stats panel ---
     let mins = info.uptime_s / 60;

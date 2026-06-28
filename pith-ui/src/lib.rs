@@ -31,7 +31,8 @@ use u8g2_fonts::{
 use pith_core::format::{self, Fmt, RuleOp};
 pub use pith_core::format::{Fmt as ValueFmt, Pal, RuleOp as Op};
 use pith_core::registry::{field_def, field_value};
-use pith_core::shift::{segment_rgb, CarData, RevCfg};
+use pith_core::shift::{segment_rgb, RevCfg};
+pub use pith_core::shift::CarData;
 use pith_core::simhub::Telemetry;
 
 // ---- palette (Pal token -> RGB565), identical to the firmware ----
@@ -47,6 +48,7 @@ pub fn pal(p: Pal) -> Rgb565 {
         Pal::Cyan => rgb(40, 210, 230),
         Pal::Blue => rgb(60, 130, 255),
         Pal::Purple => rgb(180, 110, 255),
+        Pal::Rgb(r, g, b) => rgb(r, g, b),
     }
 }
 fn rgb(r: u8, g: u8, b: u8) -> Rgb565 {
@@ -163,15 +165,21 @@ pub enum Kind {
     /// so older serialized docs still decode.
     Button {
         label: String,
+        /// OFF-state fill colour.
         color: Pal,
         action: String,
         toggle: bool,
         #[serde(default)]
         hid: u8,
+        /// Optional bound field: when set, its value (>0 = on) drives the on/off
+        /// state instead of the local toggle latch. The value itself is NOT shown.
         #[serde(default)]
         field: u8,
         #[serde(default)]
         rules: Vec<Rule>,
+        /// ON-state fill colour (state on = bound field > 0, or the local toggle).
+        #[serde(default = "on_color_default")]
+        on_color: Pal,
     },
     /// A composable widget: an element tree laid out inside the node's rect. This
     /// is how built-in and custom widgets are expressed (label vs value position,
@@ -293,7 +301,7 @@ pub fn builtin(
         "position" => Kind::Position { label: label.to_string() },
         "flag" => Kind::Flag { field, base, rules },
         "map" => Kind::Map { pts: Vec::new() },
-        "button" => Kind::Button { label: label.to_string(), color: base, action: String::new(), toggle: false, hid: 0, field, rules },
+        "button" => Kind::Button { label: label.to_string(), color: base, action: String::new(), toggle: false, hid: 0, field, rules, on_color: Pal::Green },
         _ => Kind::Stat { field, label: label.to_string(), fmt, scale, unit: unit.to_string(), base, rules, size },
     }
 }
@@ -323,7 +331,42 @@ fn text<D: DrawTarget<Color = Rgb565>>(
         12..=15 => draw!(fonts::u8g2_font_helvB12_tf),
         16..=23 => draw!(fonts::u8g2_font_helvB18_tf),
         24..=33 => draw!(fonts::u8g2_font_helvB24_tf),
-        _ => draw!(fonts::u8g2_font_logisoso32_tf),
+        34..=40 => draw!(fonts::u8g2_font_logisoso32_tf),
+        41..=48 => draw!(fonts::u8g2_font_logisoso38_tf),
+        49..=56 => draw!(fonts::u8g2_font_logisoso46_tf),
+        _ => draw!(fonts::u8g2_font_logisoso58_tf), // ~58px, the largest available
+    }
+}
+
+/// Like [`text`] but with a MONOSPACE font (fixed-width logisoso) — so right-
+/// aligned numbers (lap times, deltas, sectors) don't jiggle horizontally as the
+/// digit widths change. The big tiers are already logisoso (monospace); this only
+/// swaps the small/mid proportional helv tiers for fixed-width equivalents.
+fn text_mono<D: DrawTarget<Color = Rgb565>>(
+    d: &mut D,
+    s: &str,
+    x: i32,
+    y: i32,
+    size: u32,
+    color: Rgb565,
+    h: HorizontalAlignment,
+    v: VerticalPosition,
+) {
+    let p = Point::new(x, y);
+    let fc = FontColor::Transparent(color);
+    macro_rules! draw {
+        ($f:ty) => {{
+            let _ = FontRenderer::new::<$f>().render_aligned(s, p, v, h, fc, d);
+        }};
+    }
+    match size {
+        0..=13 => draw!(fonts::u8g2_font_6x13_tf),
+        14..=19 => draw!(fonts::u8g2_font_logisoso18_tf),
+        20..=27 => draw!(fonts::u8g2_font_logisoso24_tf),
+        28..=40 => draw!(fonts::u8g2_font_logisoso32_tf),
+        41..=48 => draw!(fonts::u8g2_font_logisoso38_tf),
+        49..=56 => draw!(fonts::u8g2_font_logisoso46_tf),
+        _ => draw!(fonts::u8g2_font_logisoso58_tf),
     }
 }
 
@@ -352,7 +395,38 @@ fn rule_color(raw: i32, base: Pal, rules: &[Rule]) -> Rgb565 {
 
 // ============ widget rendering ============
 
-fn draw_kind<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, kind: &Kind, t: &Telemetry, now_ms: i64) {
+/// Blend a colour toward white by `amt` (0..256) — used to "light up" a pressed button.
+fn lighten(c: Rgb565, amt: u16) -> Rgb565 {
+    let inv = 256 - amt;
+    Rgb565::new(
+        ((c.r() as u16 * inv + 31 * amt) >> 8) as u8,
+        ((c.g() as u16 * inv + 63 * amt) >> 8) as u8,
+        ((c.b() as u16 * inv + 31 * amt) >> 8) as u8,
+    )
+}
+
+/// Default ON-state colour for buttons in docs serialized before `on_color` existed.
+fn on_color_default() -> Pal {
+    Pal::Green
+}
+
+/// Black on light backgrounds, white on dark — a readable label over any fill.
+fn contrast(bg: Rgb565) -> Rgb565 {
+    // perceived luminance on a 0..255 scale (5/6/5 channels expanded to 8-bit)
+    let r = (bg.r() as u32) << 3;
+    let g = (bg.g() as u32) << 2;
+    let b = (bg.b() as u32) << 3;
+    let lum = (r * 299 + g * 587 + b * 114) / 1000;
+    if lum > 140 {
+        Rgb565::BLACK
+    } else {
+        Rgb565::WHITE
+    }
+}
+
+/// `active` is a bitmask of HID buttons (bit = hid-1) currently pressed/toggled-on,
+/// so a button can light up while you're touching it. 0 = nothing active.
+fn draw_kind<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, kind: &Kind, t: &Telemetry, now_ms: i64, active: u32, car: &CarData) {
     let (x, y, w, h) = (r.x, r.y, r.w as i32, r.h as i32);
     let cx = x + w / 2;
     match kind {
@@ -388,17 +462,28 @@ fn draw_kind<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, kind: &Kind, t:
         }
         Kind::GearSpeed { speed } => {
             let g = if t.gear == 0 { 'N' } else { t.gear as char };
-            text(d, &g.to_string(), cx, y + h / 2 - 6, 40, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
+            // Clip to the widget rect: the big gear font can extend past the box top,
+            // and the dirty-rect blit only clears within the rect — so any overflow
+            // would never be erased (ghost trails). Clipping keeps it inside the rect.
+            let area = Rectangle::new(Point::new(x, y), Size::new(w.max(0) as u32, h.max(0) as u32));
+            let mut cd = d.clipped(&area);
             if *speed {
-                text(d, &t.speed_kmh.to_string(), cx, y + h - 26, 24, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
-                text(d, "KM/H", cx, y + h - 8, 11, pal(Pal::Dim), HorizontalAlignment::Center, VerticalPosition::Center);
+                // gear in the upper area, speed + unit along the bottom
+                let gsz = (h * 5 / 10).clamp(11, 46) as u32;
+                text(&mut cd, &g.to_string(), cx, y + h * 4 / 10, gsz, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
+                text(&mut cd, &t.speed_kmh.to_string(), cx, y + h - 26, 24, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
+                text(&mut cd, "KM/H", cx, y + h - 8, 11, pal(Pal::Dim), HorizontalAlignment::Center, VerticalPosition::Center);
+            } else {
+                // gear only: centred in the box, scaled to the largest font that fits
+                let gsz = (h - 14).clamp(11, 58) as u32;
+                text(&mut cd, &g.to_string(), cx, y + h / 2, gsz, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
             }
         }
         Kind::RpmStrip { count } => {
             let seg = if *count == 0 { 12 } else { (*count as i32).clamp(1, 48) };
             let sw = w / seg;
             for i in 0..seg {
-                let c = segment_rgb(t, i, seg, &RevCfg::default(), &CarData::default(), now_ms);
+                let c = segment_rgb(t, i, seg, &RevCfg::default(), car, now_ms);
                 let col = if c == 0 { pal(Pal::Panel) } else { rgb888(c) };
                 fill_round(d, x + i * sw + 1, y + 4, sw - 2, h - 8, 3, col);
             }
@@ -426,16 +511,16 @@ fn draw_kind<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, kind: &Kind, t:
             for i in 0..3 {
                 let col = if secs[i] > 0 && bs[i] > 0 && secs[i] <= bs[i] { pal(Pal::Green) } else { pal(Pal::Amber) };
                 let s = format::format(secs[i], Fmt::Sector, 1, "");
-                text(d, &s, x + i as i32 * sw + sw / 2, y + h / 2, 12, col, HorizontalAlignment::Center, VerticalPosition::Center);
+                text_mono(d, &s, x + i as i32 * sw + sw / 2, y + h / 2, 12, col, HorizontalAlignment::Center, VerticalPosition::Center);
             }
         }
         Kind::LapPair => {
             let cur = format::format(t.cur_lap_ms, Fmt::Time, 1, "");
             let best = format::format(t.best_lap_ms, Fmt::Time, 1, "");
             text(d, "CURRENT", cx, y + 10, 11, pal(Pal::Dim), HorizontalAlignment::Center, VerticalPosition::Center);
-            text(d, &cur, cx, y + h / 4 + 6, 18, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
+            text_mono(d, &cur, cx, y + h / 4 + 6, 18, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
             text(d, "BEST", cx, y + h / 2 + 8, 11, pal(Pal::Dim), HorizontalAlignment::Center, VerticalPosition::Center);
-            text(d, &best, cx, y + 3 * h / 4 + 4, 18, pal(Pal::Cyan), HorizontalAlignment::Center, VerticalPosition::Center);
+            text_mono(d, &best, cx, y + 3 * h / 4 + 4, 18, pal(Pal::Cyan), HorizontalAlignment::Center, VerticalPosition::Center);
         }
         Kind::Position { label } => {
             text(d, label, cx, y + 12, 11, pal(Pal::Dim), HorizontalAlignment::Center, VerticalPosition::Center);
@@ -494,35 +579,45 @@ fn draw_kind<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, kind: &Kind, t:
             };
             let (ay, vp) = valign.place(y, h);
             let s = format::format(raw, f, sc, unit);
-            text(d, &s, ax, ay, sz, rule_color(raw, *base, rules), align.h(), vp);
+            let col = rule_color(raw, *base, rules);
+            // Numbers use a fixed-width font so right-aligned values (lap times,
+            // deltas, sectors) don't jiggle as digit widths change; free text stays
+            // proportional (logisoso has no proper letterforms).
+            if matches!(f, Fmt::Str) {
+                text(d, &s, ax, ay, sz, col, align.h(), vp);
+            } else {
+                text_mono(d, &s, ax, ay, sz, col, align.h(), vp);
+            }
         }
-        Kind::Button { label, color, toggle, field, rules, .. } => {
-            let raw = if *field > 0 { field_value(t, *field as usize) } else { 0 };
-            // bound field drives the fill colour via rules (game-state-aware)
-            let bg = if *field > 0 { rule_color(raw, *color, rules) } else { pal(*color) };
+        Kind::Button { label, color, toggle, field, hid, on_color, .. } => {
+            // Toggles reflect game state ONLY (the bound field, >0 = on) — no latch,
+            // no press overlay, no outline. Momentary (push) buttons glow while the
+            // button is physically pressed (the `active` HID bit). Value is never shown.
+            let bit_on = *hid > 0 && (active >> (*hid as u32 - 1)) & 1 == 1;
+            let field_on = *field > 0 && field_value(t, *field as usize) > 0;
+            let on = if *toggle || *field > 0 { field_on } else { bit_on };
+            let base = if on { pal(*on_color) } else { pal(*color) };
+            // Momentary "touch registered" glow + bright border on ANY button while
+            // it's physically pressed (the `active` bit is the finger-down button,
+            // not the toggle latch — so it flashes on press and clears on release,
+            // leaving the toggle's on/off colour purely game-data driven).
+            let pressed = bit_on;
+            let bg = if pressed { lighten(base, 90) } else { base };
             fill_round(d, x + 1, y + 1, w - 2, h - 2, 6, bg);
-            // toggles read differently from momentary push buttons via an outline
-            if *toggle {
+            if pressed {
                 let _ = RoundedRectangle::with_equal_corners(
-                    Rectangle::new(Point::new(x + 2, y + 2), Size::new((w - 4).max(0) as u32, (h - 4).max(0) as u32)),
-                    Size::new(5, 5),
+                    Rectangle::new(Point::new(x + 1, y + 1), Size::new((w - 2).max(0) as u32, (h - 2).max(0) as u32)),
+                    Size::new(6, 6),
                 )
-                .into_styled(PrimitiveStyle::with_stroke(pal(Pal::White), 1))
+                .into_styled(PrimitiveStyle::with_stroke(pal(Pal::White), 2))
                 .draw(d);
             }
-            let has_val = *field > 0;
-            let ly = if has_val { y + h / 2 - 8 } else { y + h / 2 };
-            text(d, label, cx, ly, 14, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
-            if has_val {
-                let def = field_def(*field as usize);
-                let f = def.map(|d| d.fmt).unwrap_or(Fmt::Int);
-                let sc = def.map(|d| d.scale).unwrap_or(1);
-                let s = format::format(raw, f, sc, "");
-                text(d, &s, cx, y + h / 2 + 9, 12, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
-            }
+            // label only (no value), in a colour that contrasts the fill
+            text(d, label, cx, y + h / 2, 14, contrast(bg), HorizontalAlignment::Center, VerticalPosition::Center);
         }
-        Kind::Widget(el) => layout_draw(d, r, el, t, now_ms),
+        Kind::Widget(el) => layout_draw(d, r, el, t, now_ms, car),
     }
+    let _ = active;
 }
 
 /// Inset a rect by `pad` on all sides (clamped to non-negative size).
@@ -538,13 +633,13 @@ fn inset(r: &Rect, pad: i32) -> Rect {
 /// Lay out + draw an element tree inside `r`. Row/Col split the main axis by flex
 /// weight; Stack overlays; Leaf draws via [`draw_kind`] (so every existing widget
 /// is reusable as a building block).
-fn layout_draw<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, el: &El, t: &Telemetry, now_ms: i64) {
+fn layout_draw<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, el: &El, t: &Telemetry, now_ms: i64, car: &CarData) {
     match el {
-        El::Leaf(k) => draw_kind(d, r, k, t, now_ms),
+        El::Leaf(k) => draw_kind(d, r, k, t, now_ms, 0, car),
         El::Stack { pad, children } => {
             let inner = inset(r, *pad as i32);
             for c in children {
-                layout_draw(d, &inner, c, t, now_ms);
+                layout_draw(d, &inner, c, t, now_ms, car);
             }
         }
         El::Tabs { titles, active, pages } => {
@@ -560,7 +655,7 @@ fn layout_draw<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, el: &El, t: &
             }
             if let Some(page) = pages.get(*active as usize) {
                 let body = Rect { x: r.x, y: r.y + strip_h, w: r.w, h: (r.h as i32 - strip_h).max(0) as u32 };
-                layout_draw(d, &body, page, t, now_ms);
+                layout_draw(d, &body, page, t, now_ms, car);
             }
         }
         El::Row { gap, pad, children } => {
@@ -575,7 +670,7 @@ fn layout_draw<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, el: &El, t: &
             for s in children {
                 let cw = avail * s.flex.max(1) as i32 / total;
                 let cr = Rect { x: cx, y: inner.y, w: cw.max(0) as u32, h: inner.h };
-                layout_draw(d, &cr, &s.el, t, now_ms);
+                layout_draw(d, &cr, &s.el, t, now_ms, car);
                 cx += cw + *gap as i32;
             }
         }
@@ -591,7 +686,7 @@ fn layout_draw<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, el: &El, t: &
             for s in children {
                 let ch = avail * s.flex.max(1) as i32 / total;
                 let cr = Rect { x: inner.x, y: cy, w: inner.w, h: ch.max(0) as u32 };
-                layout_draw(d, &cr, &s.el, t, now_ms);
+                layout_draw(d, &cr, &s.el, t, now_ms, car);
                 cy += ch + *gap as i32;
             }
         }
@@ -602,7 +697,7 @@ fn layout_draw<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, el: &El, t: &
 
 /// Per-node content signature (FNV-1a of the telemetry that affects the node's
 /// pixels). Static kinds hash to a constant so they draw once and never repaint.
-fn node_sig(kind: &Kind, t: &Telemetry, now_ms: i64) -> u64 {
+fn node_sig(kind: &Kind, t: &Telemetry, now_ms: i64, active: u32) -> u64 {
     fn h(vals: &[i64]) -> u64 {
         let mut x: u64 = 0xcbf29ce484222325;
         for &v in vals {
@@ -618,8 +713,12 @@ fn node_sig(kind: &Kind, t: &Telemetry, now_ms: i64) -> u64 {
         Kind::Stat { field, .. }
         | Kind::Bar { field, .. }
         | Kind::Flag { field, .. }
-        | Kind::Button { field, .. }
         | Kind::Value { field, .. } => h(&[fv(*field)]),
+        // include the press/toggle state so a button repaints on press + release
+        Kind::Button { field, hid, .. } => {
+            let on = if *hid > 0 { (active >> (*hid as u32 - 1)) & 1 } else { 0 };
+            h(&[fv(*field), on as i64])
+        }
         Kind::GearSpeed { speed } => h(&[t.gear as i64, if *speed { t.speed_kmh as i64 } else { 0 }]),
         // blink phase keeps the rev strip live
         Kind::RpmStrip { .. } => h(&[t.rpm as i64, t.max_rpm as i64, t.shift_rpm as i64, now_ms / 80]),
@@ -639,7 +738,7 @@ fn el_sig(el: &El, t: &Telemetry, now_ms: i64) -> u64 {
         (a ^ b).wrapping_mul(0x100000001b3)
     }
     match el {
-        El::Leaf(k) => node_sig(k, t, now_ms),
+        El::Leaf(k) => node_sig(k, t, now_ms, 0),
         El::Stack { children, .. } => children.iter().fold(0, |a, c| mix(a, el_sig(c, t, now_ms))),
         El::Row { children, .. } | El::Col { children, .. } => {
             children.iter().fold(0, |a, s| mix(a, el_sig(&s.el, t, now_ms)))
@@ -658,54 +757,100 @@ fn el_sig(el: &El, t: &Telemetry, now_ms: i64) -> u64 {
 #[derive(Default)]
 pub struct RenderCache {
     sigs: Vec<u64>,
+    last_tab: i32, // active tab last painted (tabbed screens) — switch forces a full repaint
 }
 
 impl RenderCache {
     pub fn new() -> Self {
-        Self { sigs: Vec::new() }
+        Self { sigs: Vec::new(), last_tab: -1 }
     }
     /// Force a full repaint on the next [`render_screen_diff`] (e.g. after a layout
     /// swap or display wake).
     pub fn invalidate(&mut self) {
         self.sigs.clear();
+        self.last_tab = -1;
     }
 }
 
 /// Full repaint: clear to the screen background and draw every node.
-pub fn render_screen<D: DrawTarget<Color = Rgb565>>(s: &Screen, t: &Telemetry, now_ms: i64, d: &mut D) {
+pub fn render_screen<D: DrawTarget<Color = Rgb565>>(s: &Screen, t: &Telemetry, now_ms: i64, active: u32, car: &CarData, d: &mut D) {
     let _ = d.clear(pal(s.bg));
     for node in &s.nodes {
-        draw_kind(d, &node.rect, &node.kind, t, now_ms);
+        draw_kind(d, &node.rect, &node.kind, t, now_ms, active, car);
     }
 }
 
 /// Dirty-rect repaint: only redraw nodes whose telemetry changed since last call
 /// (the rest of the panel — static chrome — is left untouched, so the device only
 /// pushes the changed pixels over SPI). Pass a fresh [`RenderCache`] the first time.
+/// Returns the bounding box `(x0, y0, x1, y1)` (inclusive) of everything that was
+/// redrawn this call — so the caller can push ONLY those pixels over SPI. `None`
+/// means nothing changed (skip the blit entirely). A full repaint returns the whole
+/// screen. This is what keeps the LCD fast: blit the changed region, not the frame.
 pub fn render_screen_diff<D: DrawTarget<Color = Rgb565>>(
     s: &Screen,
     t: &Telemetry,
     now_ms: i64,
+    active: u32,
+    car: &CarData,
     cache: &mut RenderCache,
     d: &mut D,
-) {
+) -> Option<(i32, i32, i32, i32)> {
+    let mut scratch = Vec::new();
+    render_screen_dirty(s, t, now_ms, active, car, cache, d, &mut scratch)
+}
+
+/// Like [`render_screen_diff`], but also fills `rects` with the bounding box of
+/// EACH node that was redrawn (cleared first). The caller should blit those rects
+/// INDIVIDUALLY rather than the returned union — under live telemetry the changed
+/// widgets are scattered, so the union is nearly the whole screen while the actual
+/// changed pixels are a fraction of it. Per-rect blits keep the SPI cost (and the
+/// frame rate, since touch shares this loop) proportional to what really changed.
+pub fn render_screen_dirty<D: DrawTarget<Color = Rgb565>>(
+    s: &Screen,
+    t: &Telemetry,
+    now_ms: i64,
+    active: u32,
+    car: &CarData,
+    cache: &mut RenderCache,
+    d: &mut D,
+    rects: &mut Vec<(i32, i32, i32, i32)>,
+) -> Option<(i32, i32, i32, i32)> {
+    rects.clear();
     let full = cache.sigs.len() != s.nodes.len();
     if full {
         let _ = d.clear(pal(s.bg));
         cache.sigs.clear();
         cache.sigs.resize(s.nodes.len(), 0);
     }
+    let mut dirty: Option<(i32, i32, i32, i32)> = None;
     for (i, node) in s.nodes.iter().enumerate() {
-        let sig = node_sig(&node.kind, t, now_ms);
+        let sig = node_sig(&node.kind, t, now_ms, active);
         if full || cache.sigs[i] != sig {
+            let r = &node.rect;
             if !full {
                 // erase the node's rect with the screen background before repaint
-                let r = &node.rect;
                 fill_rect(d, r.x, r.y, r.w as i32, r.h as i32, pal(s.bg));
             }
-            draw_kind(d, &node.rect, &node.kind, t, now_ms);
+            draw_kind(d, r, &node.kind, t, now_ms, active, car);
             cache.sigs[i] = sig;
+            let (x0, y0) = (r.x, r.y);
+            let (x1, y1) = (r.x + r.w as i32 - 1, r.y + r.h as i32 - 1);
+            if !full {
+                rects.push((x0, y0, x1, y1));
+            }
+            dirty = Some(match dirty {
+                None => (x0, y0, x1, y1),
+                Some((ax0, ay0, ax1, ay1)) => (ax0.min(x0), ay0.min(y0), ax1.max(x1), ay1.max(y1)),
+            });
         }
+    }
+    if full {
+        let whole = (0, 0, s.w as i32 - 1, s.h as i32 - 1);
+        rects.push(whole);
+        Some(whole)
+    } else {
+        dirty
     }
 }
 
@@ -731,6 +876,8 @@ pub fn render_tabbed<D: DrawTarget<Color = Rgb565>>(
     active: u8,
     t: &Telemetry,
     now_ms: i64,
+    pressed: u32,
+    car: &CarData,
     d: &mut D,
 ) {
     let _ = d.clear(pal(s.bg));
@@ -752,8 +899,72 @@ pub fn render_tabbed<D: DrawTarget<Color = Rgb565>>(
         );
     }
     for node in s.nodes.iter().filter(|n| n.page == active) {
-        draw_kind(d, &node.rect, &node.kind, t, now_ms);
+        draw_kind(d, &node.rect, &node.kind, t, now_ms, pressed, car);
     }
+}
+
+/// Draw just the tab strip across the top (active highlighted).
+fn draw_tab_strip<D: DrawTarget<Color = Rgb565>>(s: &Screen, active: u8, d: &mut D) {
+    let n = s.tabs.len().max(1) as i32;
+    let tw = s.w as i32 / n;
+    for (i, title) in s.tabs.iter().enumerate() {
+        let tx = i as i32 * tw;
+        let on = i as u8 == active;
+        fill_round(d, tx + 1, 1, tw - 2, TAB_STRIP_H - 2, 3, pal(if on { Pal::Panel } else { Pal::Bg }));
+        text(d, title, tx + tw / 2, TAB_STRIP_H / 2, 12, pal(if on { Pal::White } else { Pal::Dim }), HorizontalAlignment::Center, VerticalPosition::Center);
+    }
+}
+
+/// Dirty-rect repaint of a tabbed screen: a full repaint on a tab switch (or first
+/// paint), then only the active page's changed nodes — same per-node blit model as
+/// [`render_screen_dirty`], so a tabbed layout with live widgets stays as cheap as a
+/// plain one. Fills `rects` with the per-node boxes to blit; returns their union.
+pub fn render_tabbed_dirty<D: DrawTarget<Color = Rgb565>>(
+    s: &Screen,
+    active: u8,
+    t: &Telemetry,
+    now_ms: i64,
+    pressed: u32,
+    car: &CarData,
+    cache: &mut RenderCache,
+    d: &mut D,
+    rects: &mut Vec<(i32, i32, i32, i32)>,
+) -> Option<(i32, i32, i32, i32)> {
+    rects.clear();
+    // Index the active page's nodes (the only ones drawn).
+    let page: Vec<&Node> = s.nodes.iter().filter(|n| n.page == active).collect();
+    let full = cache.last_tab != active as i32 || cache.sigs.len() != page.len();
+    if full {
+        let _ = d.clear(pal(s.bg));
+        draw_tab_strip(s, active, d);
+        cache.sigs.clear();
+        cache.sigs.resize(page.len(), 0);
+        cache.last_tab = active as i32;
+        for (i, node) in page.iter().enumerate() {
+            draw_kind(d, &node.rect, &node.kind, t, now_ms, pressed, car);
+            cache.sigs[i] = node_sig(&node.kind, t, now_ms, pressed);
+        }
+        let whole = (0, 0, s.w as i32 - 1, s.h as i32 - 1);
+        rects.push(whole);
+        return Some(whole);
+    }
+    let mut dirty: Option<(i32, i32, i32, i32)> = None;
+    for (i, node) in page.iter().enumerate() {
+        let sig = node_sig(&node.kind, t, now_ms, pressed);
+        if cache.sigs[i] != sig {
+            let r = &node.rect;
+            fill_rect(d, r.x, r.y, r.w as i32, r.h as i32, pal(s.bg));
+            draw_kind(d, r, &node.kind, t, now_ms, pressed, car);
+            cache.sigs[i] = sig;
+            let rect = (r.x, r.y, r.x + r.w as i32 - 1, r.y + r.h as i32 - 1);
+            rects.push(rect);
+            dirty = Some(match dirty {
+                None => rect,
+                Some((ax0, ay0, ax1, ay1)) => (ax0.min(rect.0), ay0.min(rect.1), ax1.max(rect.2), ay1.max(rect.3)),
+            });
+        }
+    }
+    dirty
 }
 
 // ============ desktop preview ============
@@ -890,7 +1101,7 @@ mod engine_tests {
         };
         let t = demo_telem();
         let mut fb = Framebuffer::new(120, 80);
-        render_screen(&screen, &t, 0, &mut fb);
+        render_screen(&screen, &t, 0, 0, &CarData::default(), &mut fb);
         // some non-background pixels were drawn
         let bg = pal(Pal::Bg);
         assert!(fb_any_non_bg(&fb, bg), "widget drew nothing");

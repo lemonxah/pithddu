@@ -79,6 +79,17 @@ impl Dash {
         self.tx_str("@T\n");
         self.rx_line(2000)
     }
+    /// Fire-and-forget: push one SimHub `$`-frame to the device. The device's
+    /// dispatch parses any non-`@` line into TELEM, so this drives the screen the
+    /// same way the old Custom Serial feed did — but over the HID channel the
+    /// dashboard already owns. No reply is sent, so we don't drain/read (keeps the
+    /// ~60 Hz stream cheap and off the command-reply path).
+    pub fn push_telemetry(&mut self, frame: &str) {
+        if frame.is_empty() {
+            return;
+        }
+        self.tx_str(&format!("{frame}\n"));
+    }
     pub fn capabilities(&mut self) -> String {
         self.drain_t();
         self.tx_str("@CAP\n");
@@ -106,6 +117,18 @@ impl Dash {
         let (ok, r) = self.command(&format!("@UI{json}"));
         self.logln(&format!("ui: {r}"));
         ok
+    }
+    /// Store the GUI's full editor-layout blob on the device (@EL) for lossless
+    /// round-trip — the device echoes it back via @EG, it doesn't render it.
+    pub fn push_editor(&mut self, json: &str) -> bool {
+        let (ok, r) = self.command(&format!("@EL{json}"));
+        self.logln(&format!("editor: {r}"));
+        ok
+    }
+    /// Read the GUI's editor-layout blob back from the device (@EG). Returns the
+    /// raw reply (caller extracts the JSON body).
+    pub fn read_editor(&mut self) -> String {
+        self.command("@EG").1
     }
     pub fn push_buttons(&mut self, json: &str) -> bool {
         let (ok, r) = self.command(&format!("@BS{json}"));

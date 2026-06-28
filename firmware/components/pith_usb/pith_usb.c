@@ -223,6 +223,8 @@ void pith_usb_init(const char *serial) {
         ESP_LOGE(TAG, "tusb_init failed");
         return;
     }
-    xTaskCreatePinnedToCore(tusb_device_task, "tinyusb", 4096, NULL, 5, NULL, 0);
+    // 16 KB stack: the HID/CDC command callbacks run in this task and parse the
+    // pushed UiDoc (typed serde deserialization), which overflowed the old 4 KB.
+    xTaskCreatePinnedToCore(tusb_device_task, "tinyusb", 16384, NULL, 5, NULL, 0);
     ESP_LOGI(TAG, "USB composite up — CDC + HID (serial %s)", s_serial);
 }

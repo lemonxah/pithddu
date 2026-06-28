@@ -19,6 +19,12 @@ const C_ABS: (u8, u8, u8) = (0, 150, 255);
 /// Loaded car shift-light data (None = use the generic RevCfg bar).
 static CAR: Mutex<Option<CarData>> = Mutex::new(None);
 
+/// Snapshot the loaded car profile (default when none) so the on-screen RPM strip
+/// renders identically to the hardware LED strip (same `segment_rgb` inputs).
+pub fn current_car() -> CarData {
+    CAR.lock().unwrap().clone().unwrap_or_default()
+}
+
 fn now_ms() -> i64 {
     unsafe { sys::esp_timer_get_time() / 1000 }
 }
@@ -240,6 +246,8 @@ pub fn spawn() {
                 Some(s) => s,
                 None => return,
             };
+            // Re-apply the saved car profile so the strip uses it right after boot
+            // (the dashboard also re-pushes the live @C on reconnect as a backstop).
             let cj = state::with(|s| s.car_json.clone());
             if !cj.is_empty() {
                 apply_car_json(&cj);

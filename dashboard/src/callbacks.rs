@@ -421,19 +421,53 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
                 });
             }};
         }
+        // For LineEdit-backed (text) fields: a LIGHT refresh that updates the live
+        // preview + overlays but does NOT push_edit_module — re-setting the edit
+        // struct rebinds this LineEdit's text and drops focus after one keystroke.
+        macro_rules! mod_text_setter {
+            ($method:ident, $field:ident) => {{
+                let c = ctx.clone();
+                rl.$method(move |v: SharedString| {
+                    if let Some(u) = c.ui.upgrade() {
+                        let mut st = c.lock();
+                        with_selected(&u, &mut st, |m| m.$field = v.to_string());
+                        mark_dirty(&u, &st);
+                        crate::ui_bridge::race::push_nodes(&u, &st);
+                        crate::ui_bridge::uidoc::push_preview(&u, &st);
+                    }
+                });
+            }};
+        }
         mod_setter!(on_set_mod_kind, kind);
         mod_setter!(on_set_mod_field, field);
-        mod_setter!(on_set_mod_label, label);
-        mod_setter!(on_set_mod_unit, unit);
+        mod_text_setter!(on_set_mod_label, label);
+        mod_text_setter!(on_set_mod_unit, unit);
         mod_setter!(on_set_mod_fmt, fmt_type);
         mod_setter!(on_set_mod_base, base);
+        mod_setter!(on_set_mod_on_base, on_base);
+        let c = ctx.clone();
+        rl.on_save_theme_swatch(move |hex: SharedString| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                let h = hex.to_string();
+                if pith_core::format::parse_hex(&h).is_some() && !st.custom_swatches.contains(&h) {
+                    st.custom_swatches.push(h);
+                    if st.custom_swatches.len() > 16 {
+                        st.custom_swatches.remove(0);
+                    }
+                }
+                crate::ui_bridge::race::push_theme_swatches(&u, &st);
+            }
+        });
         let c = ctx.clone();
         rl.on_set_mod_size(move |v| {
             if let Some(u) = c.ui.upgrade() {
                 let mut st = c.lock();
-                with_selected(&u, &mut st, |m| m.size_pct = v.clamp(0, 100));
+                with_selected(&u, &mut st, |m| m.size_pct = v.clamp(0, 200));
                 mark_dirty(&u, &st);
-                refresh_race(&u, &st);
+                // light refresh (LineEdit): don't rebuild the edit module
+                crate::ui_bridge::race::push_nodes(&u, &st);
+                crate::ui_bridge::uidoc::push_preview(&u, &st);
             }
         });
         let c = ctx.clone();
@@ -451,7 +485,9 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
                 let mut st = c.lock();
                 with_selected(&u, &mut st, |m| m.hid = v.clamp(0, 32));
                 mark_dirty(&u, &st);
-                refresh_race(&u, &st);
+                // light refresh (LineEdit): don't rebuild the edit module
+                crate::ui_bridge::race::push_nodes(&u, &st);
+                crate::ui_bridge::uidoc::push_preview(&u, &st);
             }
         });
         let c = ctx.clone();
@@ -511,17 +547,20 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
             let msg = if !c.dash().connected() {
                 "Not connected".to_string()
             } else {
-                let (race_json, ui_json) = {
+                let (race_json, ui_json, editor_json) = {
                     let st = c.lock();
                     (
                         build_race_layout_json(&st),
                         crate::ui_bridge::uidoc::build_uidoc_json(&st),
+                        crate::persist::build_editor_layout_json(&st),
                     )
                 };
-                // Push the legacy @RS layout (fallback) AND the pith-ui UiDoc (@UI),
-                // which the firmware renders with dirty-rect when present.
+                // Push the legacy @RS layout (fallback), the pith-ui UiDoc (@UI) the
+                // firmware renders, AND the full editor blob (@EL) so we can read the
+                // exact freeform layout back later.
                 let ok_race = c.dash().push_race(&race_json);
                 let ok_ui = c.dash().push_ui(&ui_json);
+                let _ = c.dash().push_editor(&editor_json);
                 if ok_race || ok_ui {
                     let mut st = c.lock();
                     st.race_dirty = false;
@@ -565,9 +604,6 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
                 if !st.tabs[st.edit_display as usize].is_empty() {
                     m.page = st.edit_tab;
                 }
-                // Drop a default 140×70 box near the middle of the panel.
-                m.x = 170;
-                m.y = 125;
                 m.w = 140;
                 m.h = 70;
                 // Buttons get the smallest unused HID joystick number (1..=32) across
@@ -590,8 +626,75 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
                     m.w = 96;
                     m.h = 56;
                 }
+                // Cascade new nodes so they don't stack exactly on top of each other —
+                // overlapping boxes can't be selected or dragged individually.
+                let n = st
+                    .nodes
+                    .iter()
+                    .filter(|x| x.display == m.display && x.page == m.page)
+                    .count() as i32;
+                m.x = (150 + (n % 8) * 26).clamp(0, CANVAS_W - m.w);
+                m.y = (90 + (n % 8) * 22).clamp(0, CANVAS_H - m.h);
                 st.nodes.push(m);
                 u.global::<RaceLayout>().set_sel_id(sstr(&id));
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+        // Add a 3×3 button grid that fills the current tab's content area (below the
+        // tab header strip when the display is tabbed). Each cell is its own button
+        // node with a fresh HID, so they stay individually editable.
+        let c = ctx.clone();
+        rl.on_add_button_grid(move || {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                let disp = st.edit_display;
+                let tabbed = !st.tabs[disp as usize].is_empty();
+                let page = if tabbed { st.edit_tab } else { 0 };
+                // available area excludes the tab header when the display is tabbed
+                let top = if tabbed { pith_ui::TAB_STRIP_H } else { 0 };
+                let area_h = CANVAS_H - top;
+                let mut used = [false; 33];
+                for n in &st.nodes {
+                    if n.kind == "button" && (1..=32).contains(&n.hid) {
+                        used[n.hid as usize] = true;
+                    }
+                    for e in &n.els {
+                        if e.kind == "button" && (1..=32).contains(&e.hid) {
+                            used[e.hid as usize] = true;
+                        }
+                    }
+                }
+                let (cols, rows, gap) = (3, 3, 6);
+                let cw = (CANVAS_W - gap * (cols + 1)) / cols;
+                let ch = (area_h - gap * (rows + 1)) / rows;
+                let mut last_id = String::new();
+                for r in 0..rows {
+                    for col in 0..cols {
+                        let mut m = default_spec("button");
+                        let id = format!("button-{}", st.uid);
+                        st.uid += 1;
+                        m.id = id.clone();
+                        m.kind = "button".into();
+                        m.display = disp;
+                        m.page = page;
+                        m.x = gap + col * (cw + gap);
+                        m.y = top + gap + r * (ch + gap);
+                        m.w = cw;
+                        m.h = ch;
+                        m.base = "panel".into();
+                        m.on_base = "green".into();
+                        let hid = (1..=32).find(|&i| !used[i as usize]).unwrap_or(0);
+                        if hid > 0 {
+                            used[hid as usize] = true;
+                        }
+                        m.hid = hid;
+                        m.label = format!("B{}", r * cols + col + 1);
+                        st.nodes.push(m);
+                        last_id = id;
+                    }
+                }
+                u.global::<RaceLayout>().set_sel_id(sstr(&last_id));
                 mark_dirty(&u, &st);
                 refresh_race(&u, &st);
             }
@@ -824,7 +927,10 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
                     st.tabs[d][idx as usize] = name.to_string();
                 }
                 mark_dirty(&u, &st);
-                refresh_race(&u, &st);
+                // NB: do NOT refresh_race here — that rebuilds the tab-names model,
+                // which recreates this LineEdit and steals focus after one keystroke.
+                // Just update the live preview; the model re-syncs on the next full refresh.
+                crate::ui_bridge::uidoc::push_preview(&u, &st);
             }
         });
         let c = ctx.clone();
@@ -923,7 +1029,8 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
                 let mut st = c.lock();
                 with_selected(&u, &mut st, |m| m.gap = g.clamp(0, 60));
                 mark_dirty(&u, &st);
-                refresh_race(&u, &st);
+                crate::ui_bridge::race::push_nodes(&u, &st);
+                crate::ui_bridge::uidoc::push_preview(&u, &st);
             }
         });
         let c = ctx.clone();
@@ -987,6 +1094,8 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
                 refresh_race(&u, &st);
             }
         });
+        // Light refresh (no push_elems) so editing an element's LineEdit doesn't
+        // rebuild the elems model and drop focus after one keystroke.
         macro_rules! elem_str_setter {
             ($method:ident, $field:ident) => {{
                 let c = ctx.clone();
@@ -995,7 +1104,8 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
                         let mut st = c.lock();
                         with_sel_elem(&u, &mut st, |e| e.$field = v.to_string());
                         mark_dirty(&u, &st);
-                        refresh_race(&u, &st);
+                        crate::ui_bridge::race::push_nodes(&u, &st);
+                        crate::ui_bridge::uidoc::push_preview(&u, &st);
                     }
                 });
             }};
@@ -1022,14 +1132,31 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
                         let mut st = c.lock();
                         with_sel_elem(&u, &mut st, |e| e.$field = v.clamp($lo, $hi));
                         mark_dirty(&u, &st);
+                        crate::ui_bridge::race::push_nodes(&u, &st);
+                        crate::ui_bridge::uidoc::push_preview(&u, &st);
+                    }
+                });
+            }};
+        }
+        // Button-style int setters (align/valign): full refresh so the active
+        // segment highlights. They're clicked, not typed, so rebuilding the elems
+        // model is safe (no focus to lose).
+        macro_rules! elem_int_full_setter {
+            ($method:ident, $field:ident, $lo:expr, $hi:expr) => {{
+                let c = ctx.clone();
+                rl.$method(move |v| {
+                    if let Some(u) = c.ui.upgrade() {
+                        let mut st = c.lock();
+                        with_sel_elem(&u, &mut st, |e| e.$field = v.clamp($lo, $hi));
+                        mark_dirty(&u, &st);
                         refresh_race(&u, &st);
                     }
                 });
             }};
         }
-        elem_int_setter!(on_set_elem_size, size, 0, 100);
-        elem_int_setter!(on_set_elem_align, align, 0, 2);
-        elem_int_setter!(on_set_elem_valign, valign, 0, 2);
+        elem_int_setter!(on_set_elem_size, size, 0, 200);
+        elem_int_full_setter!(on_set_elem_align, align, 0, 2);
+        elem_int_full_setter!(on_set_elem_valign, valign, 0, 2);
         elem_int_setter!(on_set_elem_flex, flex, 1, 12);
         elem_int_setter!(on_set_elem_hid, hid, 0, 32);
         let c = ctx.clone();

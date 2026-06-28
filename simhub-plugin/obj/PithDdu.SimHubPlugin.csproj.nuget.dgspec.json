@@ -1,0 +1,58 @@
+{
+  "format": 1,
+  "restore": {
+    "/home/lemonxah/storage/git/pithddu/simhub-plugin/PithDdu.SimHubPlugin.csproj": {}
+  },
+  "projects": {
+    "/home/lemonxah/storage/git/pithddu/simhub-plugin/PithDdu.SimHubPlugin.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "/home/lemonxah/storage/git/pithddu/simhub-plugin/PithDdu.SimHubPlugin.csproj",
+        "projectName": "PithDdu.SimHubPlugin",
+        "projectPath": "/home/lemonxah/storage/git/pithddu/simhub-plugin/PithDdu.SimHubPlugin.csproj",
+        "packagesPath": "/home/lemonxah/.nuget/packages/",
+        "outputPath": "/home/lemonxah/storage/git/pithddu/simhub-plugin/obj/",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "/home/lemonxah/.nuget/NuGet/NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net48"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net48": {
+            "targetAlias": "net48",
+            "projectReferences": {}
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        },
+        "SdkAnalysisLevel": "10.0.100"
+      },
+      "frameworks": {
+        "net48": {
+          "targetAlias": "net48",
+          "dependencies": {
+            "Microsoft.NETFramework.ReferenceAssemblies": {
+              "suppressParent": "All",
+              "target": "Package",
+              "version": "[1.0.3, )"
+            }
+          },
+          "runtimeIdentifierGraphPath": "/usr/share/dotnet/sdk/10.0.109/RuntimeIdentifierGraph.json"
+        }
+      }
+    }
+  }
+}

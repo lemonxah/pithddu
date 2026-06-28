@@ -179,7 +179,7 @@ export component Sidebar inherits Rectangle {
         }
         Rectangle { height: 6px; }
         NavRow { glyph: "▦"; label: "Overview"; active: AppState.page == Page.overview; clicked => { AppState.page = Page.overview; } }
-        NavRow { glyph: "▤"; label: "Race Screen"; active: AppState.page == Page.race; clicked => { AppState.page = Page.race; } }
+        NavRow { glyph: "▤"; label: "Screens"; active: AppState.page == Page.race; clicked => { AppState.page = Page.race; } }
         NavRow { glyph: "▰"; label: "Shift Lights"; active: AppState.page == Page.shift; clicked => { AppState.page = Page.shift; } }
         NavRow { glyph: "◈"; label: "Car Library"; active: AppState.page == Page.cars; clicked => { AppState.page = Page.cars; } }
         NavRow { glyph: "⎓"; label: "SimHub"; active: AppState.page == Page.simhub; clicked => { AppState.page = Page.simhub; } }
