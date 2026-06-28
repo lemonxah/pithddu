@@ -152,21 +152,67 @@ pub fn race_layout_from_json(s: &mut State, j: &Value) {
     s.nodes = crate::catalog::zones_to_nodes(&s.zones);
 }
 
-fn mod_to_json(m: &ModSpec) -> Value {
-    let rules: Vec<Value> = m
-        .rules
+fn rules_to_json(rules: &[ColorRule]) -> Vec<Value> {
+    rules
         .iter()
         .map(|rl| json!({"op": rl.op, "v": rl.v, "c": rl.color}))
-        .collect();
+        .collect()
+}
+fn rules_from_json(j: &Value) -> Vec<ColorRule> {
+    j.get("rules")
+        .and_then(|r| r.as_array())
+        .map(|rs| {
+            rs.iter()
+                .map(|r| ColorRule {
+                    op: jstr(r, "op", ">"),
+                    v: jint(r, "v", 0) as i32,
+                    color: jstr(r, "c", "red"),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+fn elem_to_json(e: &crate::state::ElemSpec) -> Value {
+    json!({
+        "kind": e.kind, "flex": e.flex, "field": e.field, "text": e.text,
+        "fmt": e.fmt_type, "unit": e.unit, "scale": e.scale, "base": e.base,
+        "size": e.size, "align": e.align, "valign": e.valign, "action": e.action,
+        "toggle": e.toggle, "hid": e.hid,
+        "rules": rules_to_json(&e.rules),
+    })
+}
+fn elem_from_json(j: &Value) -> crate::state::ElemSpec {
+    crate::state::ElemSpec {
+        kind: jstr(j, "kind", "label"),
+        flex: jint(j, "flex", 1) as i32,
+        field: jstr(j, "field", ""),
+        text: jstr(j, "text", ""),
+        fmt_type: jstr(j, "fmt", ""),
+        unit: jstr(j, "unit", ""),
+        scale: jint(j, "scale", 0) as i32,
+        base: jstr(j, "base", "white"),
+        size: jint(j, "size", 0) as i32,
+        align: jint(j, "align", 1) as i32,
+        valign: jint(j, "valign", 1) as i32,
+        action: jstr(j, "action", ""),
+        rules: rules_from_json(j),
+        toggle: jbool(j, "toggle", false),
+        hid: jint(j, "hid", 0) as i32,
+    }
+}
+
+fn mod_to_json(m: &ModSpec) -> Value {
+    let els: Vec<Value> = m.els.iter().map(elem_to_json).collect();
     json!({
         "id": m.id, "templ": m.templ, "kind": m.kind, "field": m.field,
         "label": m.label, "fmt": m.fmt_type, "unit": m.unit, "scale": m.scale,
-        "base": m.base, "sz": m.size_pct, "enabled": m.enabled, "rules": rules,
+        "base": m.base, "sz": m.size_pct, "enabled": m.enabled, "rules": rules_to_json(&m.rules),
         "x": m.x, "y": m.y, "w": m.w, "h": m.h, "disp": m.display,
+        "dir": m.dir, "gap": m.gap, "toggle": m.toggle, "hid": m.hid, "page": m.page, "els": els,
     })
 }
 fn mod_from_json(j: &Value) -> ModSpec {
-    let mut m = ModSpec {
+    let m = ModSpec {
         id: jstr(j, "id", ""),
         templ: jstr(j, "templ", ""),
         kind: jstr(j, "kind", "stat"),
@@ -178,22 +224,23 @@ fn mod_from_json(j: &Value) -> ModSpec {
         base: jstr(j, "base", "white"),
         size_pct: jint(j, "sz", 0) as i32,
         enabled: jbool(j, "enabled", true),
-        rules: Vec::new(),
+        rules: rules_from_json(j),
         x: jint(j, "x", 0) as i32,
         y: jint(j, "y", 0) as i32,
         w: jint(j, "w", 0) as i32,
         h: jint(j, "h", 0) as i32,
         display: jint(j, "disp", 0) as u8,
+        dir: jint(j, "dir", 0) as i32,
+        gap: jint(j, "gap", 4) as i32,
+        toggle: jbool(j, "toggle", false),
+        hid: jint(j, "hid", 0) as i32,
+        page: jint(j, "page", 0) as i32,
+        els: j
+            .get("els")
+            .and_then(|e| e.as_array())
+            .map(|a| a.iter().map(elem_from_json).collect())
+            .unwrap_or_default(),
     };
-    if let Some(rules) = j.get("rules").and_then(|r| r.as_array()) {
-        for r in rules {
-            m.rules.push(ColorRule {
-                op: jstr(r, "op", ">"),
-                v: jint(r, "v", 0) as i32,
-                color: jstr(r, "c", "red"),
-            });
-        }
-    }
     m
 }
 
@@ -273,11 +320,41 @@ pub fn save_race_layout(s: &State) {
         "active": s.active_preset,
         "zones": zones_to_json(&s.zones),
         "nodes": nodes,
+        "tabs": [s.tabs[0].clone(), s.tabs[1].clone()],
+        "map_track": s.map_track,
     });
     let _ = std::fs::write(
         race_layout_path(),
         serde_json::to_string_pretty(&j).unwrap_or_default(),
     );
+}
+
+/// Per-display tab names from a stored race layout (empty when not tabbed).
+pub fn load_race_tabs() -> [Vec<String>; 2] {
+    let body = read_file(&race_layout_path());
+    let mut out = [Vec::new(), Vec::new()];
+    if let Ok(j) = serde_json::from_str::<Value>(&body) {
+        if let Some(arr) = j.get("tabs").and_then(|t| t.as_array()) {
+            for (i, disp) in arr.iter().take(2).enumerate() {
+                if let Some(names) = disp.as_array() {
+                    out[i] = names
+                        .iter()
+                        .filter_map(|n| n.as_str().map(|s| s.to_string()))
+                        .collect();
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Selected track-map name from a stored race layout (default "(none)").
+pub fn load_map_track() -> String {
+    let body = read_file(&race_layout_path());
+    serde_json::from_str::<Value>(&body)
+        .ok()
+        .and_then(|j| j.get("map_track").and_then(|t| t.as_str()).map(|s| s.to_string()))
+        .unwrap_or_else(|| "(none)".to_string())
 }
 
 pub fn load_race_layout() -> Option<(Vec<Zone>, Vec<ModSpec>, i32)> {

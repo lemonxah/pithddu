@@ -17,9 +17,7 @@ use crate::ui_bridge::buttons::push_buttons_model;
 use crate::ui_bridge::cars::{push_car_results, push_classes, push_games, rebuild_filtered};
 use crate::ui_bridge::device::push_pins;
 use crate::ui_bridge::firmware::{refresh_firmware_local, refresh_serial_ports};
-use crate::ui_bridge::race::{
-    push_catalog, push_editor_options, push_presets, push_resolved, push_zones,
-};
+use crate::ui_bridge::race::{push_catalog, push_editor_options};
 use crate::ui_bridge::shift::{push_led_model, push_shift_scalars};
 use crate::ui_bridge::simhub::{push_sim_fields, regen_simhub};
 use crate::ui_bridge::{col, model, sstr};
@@ -146,6 +144,8 @@ pub fn init(ui: &AppWindow, rt: &tokio::runtime::Runtime) -> Arc<Ctx> {
         if active >= 0 && (active as usize) < s.presets.len() {
             s.active_preset = active;
         }
+        s.tabs = load_race_tabs();
+        s.map_track = load_map_track();
     }
     load_active_car(&mut s);
     load_shift_cfg(&mut s);
@@ -174,10 +174,11 @@ pub fn init(ui: &AppWindow, rt: &tokio::runtime::Runtime) -> Arc<Ctx> {
         push_shift_scalars(ui, &st);
         push_led_model(ui, &st);
         push_catalog(ui, &st);
-        push_zones(ui, &st);
-        push_presets(ui, &st);
-        push_resolved(ui, &st);
-        crate::ui_bridge::uidoc::push_preview(ui, &st);
+        // Populate every race-editor model (zones, nodes, presets, resolved,
+        // edit module, elems, preview) up front — same as any later refresh.
+        // Without push_nodes here the interactive boxes stay empty until the
+        // first preset switch, so EDIT MODE looks dead until you reselect.
+        crate::ui_bridge::refresh_race(ui, &st);
         push_editor_options(ui, &st);
         push_buttons_model(ui, &st);
         push_pins(ui, &st);

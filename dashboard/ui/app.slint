@@ -18,7 +18,6 @@ import { AppState, Page } from "models.slint";
 import { TitleBar, Sidebar } from "components/chrome.slint";
 import { OverviewScreen } from "screens/overview.slint";
 import { RaceScreen } from "screens/race-screen.slint";
-import { ButtonsScreen } from "screens/buttons.slint";
 import { ShiftScreen } from "screens/shift-lights.slint";
 import { CarsScreen } from "screens/car-library.slint";
 import { SimHubScreen } from "screens/simhub.slint";
@@ -51,7 +50,6 @@ export component AppWindow inherits Window {
                     background: Theme.bg;
                     if AppState.page == Page.overview: OverviewScreen { }
                     if AppState.page == Page.race: RaceScreen { }
-                    if AppState.page == Page.buttons: ButtonsScreen { }
                     if AppState.page == Page.shift: ShiftScreen { }
                     if AppState.page == Page.cars: CarsScreen { }
                     if AppState.page == Page.simhub: SimHubScreen { }

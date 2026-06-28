@@ -36,6 +36,61 @@ pub struct ModSpec {
     pub w: i32,
     pub h: i32,
     pub display: u8,
+    // Composable widget tree: when `els` is non-empty the node is a custom widget
+    // (root Row/Col of these elements); empty -> the built-in for `kind`/`templ`.
+    pub dir: i32, // root layout: 0 = column, 1 = row
+    pub gap: i32,
+    pub els: Vec<ElemSpec>,
+    // Button nodes (kind == "button"): which HID joystick button it drives (1..=32,
+    // 0 = none) and whether it latches (toggle) or is momentary (push). The HID
+    // index is explicit so it never shifts when buttons are reordered/added.
+    pub toggle: bool,
+    pub hid: i32,
+    // Tab page this node belongs to when its display is tabbed (0 otherwise).
+    pub page: i32,
+}
+
+/// One element inside a composed widget (a leaf in the pith-ui element tree).
+#[derive(Clone)]
+pub struct ElemSpec {
+    pub kind: String, // label/value/bar/gear/gearSpeed/rpmStrip/tyreGrid/tcDual/sectors/lapPair/position/flag/map/button
+    pub flex: i32,    // share of the main axis (>= 1)
+    pub field: String,
+    pub text: String, // label / button / position caption text
+    pub fmt_type: String,
+    pub unit: String,
+    pub scale: i32,
+    pub base: String,
+    pub size: i32,
+    pub align: i32,  // 0 left, 1 center, 2 right
+    pub valign: i32, // 0 top, 1 center, 2 bottom
+    pub action: String, // legacy button semantic name (kept for back-compat)
+    pub rules: Vec<ColorRule>,
+    // Button elements: HID joystick button (1..=32, 0 = none) + latch/momentary.
+    pub toggle: bool,
+    pub hid: i32,
+}
+
+impl Default for ElemSpec {
+    fn default() -> Self {
+        ElemSpec {
+            kind: "label".into(),
+            flex: 1,
+            field: String::new(),
+            text: String::new(),
+            fmt_type: String::new(),
+            unit: String::new(),
+            scale: 0,
+            base: "white".into(),
+            size: 0,
+            align: 1,
+            valign: 1,
+            action: String::new(),
+            rules: Vec::new(),
+            toggle: false,
+            hid: 0,
+        }
+    }
 }
 
 impl Default for ModSpec {
@@ -58,6 +113,12 @@ impl Default for ModSpec {
             w: 0,
             h: 0,
             display: 0,
+            dir: 0,
+            gap: 4,
+            els: Vec::new(),
+            toggle: false,
+            hid: 0,
+            page: 0,
         }
     }
 }
@@ -148,6 +209,10 @@ pub struct State {
     pub zones: Vec<Zone>,
     pub nodes: Vec<ModSpec>, // freeform race-screen layout (the pith-ui authoring model)
     pub edit_display: u8,    // which display the freeform editor is showing (0/1)
+    pub tabs: [Vec<String>; 2], // per-display tab page names (empty = display not tabbed)
+    pub edit_tab: i32,       // tab page currently shown in the editor
+    pub map_track: String,   // selected track whose outline the Map widget shows
+    pub sel_elem: i32,       // selected element index within the selected widget (-1 = none)
     pub drag_origin: Option<(String, i32, i32, i32, i32)>, // (id,x,y,w,h) at gesture start
     pub presets: Vec<Preset>,
     pub active_preset: i32,
@@ -213,6 +278,10 @@ impl Default for State {
             zones: Vec::new(),
             nodes: Vec::new(),
             edit_display: 0,
+            tabs: [Vec::new(), Vec::new()],
+            edit_tab: 0,
+            map_track: "(none)".to_string(),
+            sel_elem: -1,
             drag_origin: None,
             presets: Vec::new(),
             active_preset: 0,

@@ -1,4 +1,4 @@
-use crate::state::{BoardDef, BoardPin, BtnData, ColorRule, ModSpec, Preset, State, Zone};
+use crate::state::{BoardDef, BoardPin, BtnData, ColorRule, ElemSpec, ModSpec, Preset, State, Zone};
 
 pub const CATALOG: &[(&str, &str, &str)] = &[
     ("gearSpeed", "Gear + Speed", "Big gear glyph and speed"),
@@ -22,6 +22,7 @@ pub const CATALOG: &[(&str, &str, &str)] = &[
     ("speed", "Speed only", "Speed value"),
     ("gear", "Gear only", "Gear glyph"),
     ("rpmValue", "RPM Value", "Numeric rpm"),
+    ("button", "Button", "HID button (push / toggle)"),
 ];
 
 pub const ZONE_KEYS: [&str; 5] = ["topStrip", "leftRail", "center", "rightRail", "bottom"];
@@ -108,7 +109,23 @@ pub fn default_spec(ty: &str) -> ModSpec {
         "mapPosition" => m.kind = "map".into(),
         "flag" => {
             m.kind = "flag".into();
-            m.base = "green".into();
+            m.field = "flag".into();
+            m.label = "FLAG".into();
+            m.base = "dim".into(); // shown when no flag is out
+            m.rules = vec![
+                ColorRule { op: "==".into(), v: 1, color: "green".into() },
+                ColorRule { op: "==".into(), v: 2, color: "amber".into() },
+                ColorRule { op: "==".into(), v: 3, color: "blue".into() },
+                ColorRule { op: "==".into(), v: 4, color: "white".into() },
+                ColorRule { op: "==".into(), v: 5, color: "white".into() },
+                ColorRule { op: "==".into(), v: 6, color: "red".into() },
+            ];
+        }
+        "button" => {
+            m.kind = "button".into();
+            m.label = "BTN".into();
+            m.base = "dim".into();
+            m.hid = 1; // node_add reassigns to the next free HID button on drop
         }
         _ => stat(&mut m, "speed_kmh", mod_name(ty), "", "white"),
     }
@@ -188,64 +205,18 @@ fn make_preset(uid: &mut i32, name: &str, builtin: bool, spec: &[(&str, &[&str])
 }
 
 pub fn seed_presets(s: &mut State) {
+    // A single, general-purpose starting layout. Users build their own from here
+    // and save them as presets; we no longer ship a pile of canned variants.
     s.presets.clear();
     s.presets.push(make_preset(
         &mut s.uid,
-        "Endurance",
+        "Default",
         true,
         &[
             ("topStrip", &["rpmLights"]),
             ("leftRail", &["lapDelta", "position"]),
             ("center", &["gearSpeed"]),
             ("rightRail", &["fuel", "tyres"]),
-            ("bottom", &["lapTimes"]),
-        ],
-    ));
-    s.presets.push(make_preset(
-        &mut s.uid,
-        "Sprint",
-        true,
-        &[
-            ("topStrip", &["rpmLights"]),
-            ("leftRail", &["lapDelta"]),
-            ("center", &["gearSpeed"]),
-            ("rightRail", &["position"]),
-            ("bottom", &["lapTimes"]),
-        ],
-    ));
-    s.presets.push(make_preset(
-        &mut s.uid,
-        "Drift",
-        true,
-        &[
-            ("topStrip", &["rpmLights"]),
-            ("leftRail", &["position"]),
-            ("center", &["gearSpeed"]),
-            ("rightRail", &["speed"]),
-            ("bottom", &[]),
-        ],
-    ));
-    s.presets.push(make_preset(
-        &mut s.uid,
-        "Rally",
-        true,
-        &[
-            ("topStrip", &["rpmLights"]),
-            ("leftRail", &["sectors"]),
-            ("center", &["gearSpeed"]),
-            ("rightRail", &["position"]),
-            ("bottom", &["lapTimes"]),
-        ],
-    ));
-    s.presets.push(make_preset(
-        &mut s.uid,
-        "Data",
-        true,
-        &[
-            ("topStrip", &["rpmLights"]),
-            ("leftRail", &["water", "oil"]),
-            ("center", &["gearSpeed"]),
-            ("rightRail", &["brakeBias", "tcAbs"]),
             ("bottom", &["lapTimes"]),
         ],
     ));
@@ -394,6 +365,71 @@ pub const PINDEFS: &[(&str, &str)] = &[
     ("led_din", "LED data"),
 ];
 pub const PIN_N: usize = 9;
+
+/// Element types that can go inside a widget (id, display name).
+pub const ELEM_KINDS: &[(&str, &str)] = &[
+    ("label", "Label (text)"),
+    ("value", "Value"),
+    ("bar", "Bar"),
+    ("gear", "Gear"),
+    ("gearSpeed", "Gear + Speed"),
+    ("rpmStrip", "RPM Strip"),
+    ("tyreGrid", "Tyre Grid"),
+    ("tcDual", "TC / ABS"),
+    ("sectors", "Sectors"),
+    ("lapPair", "Lap Times"),
+    ("position", "Position"),
+    ("flag", "Flag"),
+    ("map", "Map"),
+    ("button", "Button"),
+];
+
+pub fn elem_kind_name(id: &str) -> &str {
+    ELEM_KINDS.iter().find(|e| e.0 == id).map(|e| e.1).unwrap_or(id)
+}
+
+/// Seed a widget's editable element tree from its built-in. `stat` decomposes into
+/// a label + a value (so the label/value arrangement can be changed); every other
+/// kind becomes a single element the user can build around.
+pub fn default_els(m: &ModSpec) -> Vec<ElemSpec> {
+    match m.kind.as_str() {
+        "stat" => vec![
+            ElemSpec {
+                kind: "label".into(),
+                text: m.label.clone(),
+                base: "dim".into(),
+                size: 11,
+                flex: 1,
+                ..Default::default()
+            },
+            ElemSpec {
+                kind: "value".into(),
+                field: m.field.clone(),
+                fmt_type: m.fmt_type.clone(),
+                unit: m.unit.clone(),
+                scale: m.scale,
+                base: m.base.clone(),
+                size: m.size_pct,
+                flex: 2,
+                rules: m.rules.clone(),
+                ..Default::default()
+            },
+        ],
+        _ => vec![ElemSpec {
+            kind: m.kind.clone(),
+            field: m.field.clone(),
+            text: m.label.clone(),
+            fmt_type: m.fmt_type.clone(),
+            unit: m.unit.clone(),
+            scale: m.scale,
+            base: m.base.clone(),
+            size: m.size_pct,
+            flex: 1,
+            rules: m.rules.clone(),
+            ..Default::default()
+        }],
+    }
+}
 
 pub fn seed_boards(s: &mut State) {
     let xiao = BoardDef {
@@ -695,6 +731,19 @@ pub const SIMFIELDS: &[(&str, &str, &str)] = &[
         "ign",
         "Ignition",
         "format(isnull([EngineIgnitionOn],0),'0')",
+    ),
+    // Race flag as a code: 6 black, 5 checkered, 4 white, 3 blue, 2 yellow, 1 green,
+    // 0 none. isnull keeps it safe if a sim doesn't expose a given flag property.
+    (
+        "flag",
+        "Flag code",
+        "(isnull([Flag_Black],0)>0?6:(isnull([Flag_Checkered],0)>0?5:(isnull([Flag_White],0)>0?4:(isnull([Flag_Blue],0)>0?3:(isnull([Flag_Yellow],0)>0?2:(isnull([Flag_Green],0)>0?1:0))))))",
+    ),
+    // Lap progress 0..1000 (= 0..100.0%) for the track-map dot.
+    (
+        "trackpct",
+        "Track Pos x1000",
+        "format(isnull([DataCorePlugin.GameData.TrackPositionPercent],0)*1000,'0')",
     ),
 ];
 

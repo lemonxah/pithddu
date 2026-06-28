@@ -14,6 +14,7 @@ mod paths;
 mod persist;
 mod state;
 mod telemetry;
+mod trackmap;
 mod tray;
 mod ui_bridge;
 mod util;

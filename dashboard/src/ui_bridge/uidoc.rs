@@ -10,10 +10,11 @@ use crate::state::{ModSpec, State};
 use crate::telemetry::field_id_from_str;
 use crate::{AppWindow, RaceLayout};
 
+use crate::state::ElemSpec;
 use pith_core::format::{Fmt, Pal, RuleOp};
 use pith_core::registry::telemetry_from_fields;
 use pith_core::simhub::Telemetry;
-use pith_ui::{Kind, Node, Rect, Rule, Screen, UiDoc};
+use pith_ui::{Align, El, Kind, Node, Rect, Rule, Screen, Slot, UiDoc, VAlign};
 
 // The race panels are 480×320 (320×480 physical, rotated 90°).
 pub const SCREEN_W: u32 = 480;
@@ -30,32 +31,133 @@ fn rules_of(m: &ModSpec) -> Vec<Rule> {
         .collect()
 }
 
-fn kind_of(m: &ModSpec) -> Kind {
+fn align_of(a: i32) -> Align {
+    match a {
+        0 => Align::Left,
+        2 => Align::Right,
+        _ => Align::Center,
+    }
+}
+fn valign_of(v: i32) -> VAlign {
+    match v {
+        0 => VAlign::Top,
+        2 => VAlign::Bottom,
+        _ => VAlign::Center,
+    }
+}
+
+fn elem_rules(e: &ElemSpec) -> Vec<Rule> {
+    e.rules
+        .iter()
+        .map(|r| Rule {
+            op: RuleOp::from_str(&r.op),
+            threshold: r.v,
+            color: Pal::from_str(&r.color),
+        })
+        .collect()
+}
+
+/// One composed element -> a pith-ui leaf Kind. `rev` is the physically installed
+/// rev-LED count (so an `rpmStrip` element matches the real strip); `map` is the
+/// selected track outline baked into any `map` element.
+fn elem_kind(e: &ElemSpec, rev: u8, map: &[u16]) -> Kind {
+    let field = field_id_from_str(&e.field) as u8;
+    let base = Pal::from_str(&e.base);
+    let fmt = if e.fmt_type.is_empty() {
+        None
+    } else {
+        Some(Fmt::from_str(&e.fmt_type))
+    };
+    let size = e.size.clamp(0, 255) as u8;
+    let align = align_of(e.align);
+    let valign = valign_of(e.valign);
+    match e.kind.as_str() {
+        "label" => Kind::Label { text: e.text.clone(), color: base, size, align, valign },
+        "value" => Kind::Value { field, fmt, scale: e.scale, unit: e.unit.clone(), base, rules: elem_rules(e), size, align, valign },
+        "bar" => Kind::Bar { field, label: e.text.clone(), scale: e.scale, base, rules: elem_rules(e) },
+        "gear" => Kind::GearSpeed { speed: false },
+        "gearSpeed" => Kind::GearSpeed { speed: true },
+        "rpmStrip" => Kind::RpmStrip { count: rev },
+        "tyreGrid" => Kind::TyreGrid,
+        "tcDual" => Kind::TcDual,
+        "sectors" => Kind::Sectors,
+        "lapPair" => Kind::LapPair,
+        "position" => Kind::Position { label: e.text.clone() },
+        "flag" => Kind::Flag { field, base, rules: elem_rules(e) },
+        "map" => Kind::Map { pts: map.to_vec() },
+        "button" => Kind::Button {
+            label: if e.text.is_empty() { "BTN".into() } else { e.text.clone() },
+            color: base,
+            action: e.action.clone(),
+            toggle: e.toggle,
+            hid: e.hid.clamp(0, 32) as u8,
+            field,
+            rules: elem_rules(e),
+        },
+        _ => Kind::Value { field, fmt, scale: e.scale, unit: e.unit.clone(), base, rules: elem_rules(e), size, align, valign },
+    }
+}
+
+fn kind_of(m: &ModSpec, rev: u8, map: &[u16]) -> Kind {
+    // A customised widget (non-empty `els`) -> a Row/Col of its elements. Otherwise
+    // the shared builtin() defines the widget (decomposable ones come back as a
+    // Widget(El) tree the editor can later customise).
+    if !m.els.is_empty() {
+        let children: Vec<Slot> = m
+            .els
+            .iter()
+            .map(|e| Slot {
+                flex: e.flex.clamp(1, 65535) as u16,
+                el: El::Leaf(elem_kind(e, rev, map)),
+            })
+            .collect();
+        let gap = m.gap.clamp(0, 255) as u8;
+        let root = if m.dir == 1 {
+            El::Row { gap, pad: 2, children }
+        } else {
+            El::Col { gap, pad: 2, children }
+        };
+        return Kind::Widget(alloc_box(root));
+    }
     let field = field_id_from_str(&m.field) as u8;
     let base = Pal::from_str(&m.base);
+    // Buttons carry toggle/hid that builtin() can't express, so build the Kind here.
+    if m.kind == "button" {
+        return Kind::Button {
+            label: if m.label.is_empty() { "BTN".into() } else { m.label.clone() },
+            color: base,
+            action: String::new(),
+            toggle: m.toggle,
+            hid: m.hid.clamp(0, 32) as u8,
+            field,
+            rules: rules_of(m),
+        };
+    }
+    // RPM strip matches the physically installed rev-LED count.
+    if m.kind == "rpmStrip" {
+        return Kind::RpmStrip { count: rev };
+    }
+    // Map bakes in the selected track's outline (pushed with the layout).
+    if m.kind == "map" {
+        return Kind::Map { pts: map.to_vec() };
+    }
     let fmt = if m.fmt_type.is_empty() {
         None
     } else {
         Some(Fmt::from_str(&m.fmt_type))
     };
     let size = m.size_pct.clamp(0, 255) as u8;
-    // The shared builtin() defines each widget — decomposable ones (stat) come
-    // back as a composable Widget(El) tree the editor can rearrange.
-    pith_ui::builtin(
-        &m.kind,
-        field,
-        &m.label,
-        fmt,
-        m.scale,
-        &m.unit,
-        base,
-        rules_of(m),
-        size,
-    )
+    pith_ui::builtin(&m.kind, field, &m.label, fmt, m.scale, &m.unit, base, rules_of(m), size)
+}
+
+fn alloc_box(el: El) -> Box<El> {
+    Box::new(el)
 }
 
 /// Build a pith-ui `Screen` from the freeform nodes assigned to `display`.
 pub fn build_screen(s: &State, display: u8) -> Screen {
+    let rev = s.led_rev.clamp(0, 48) as u8;
+    let map = crate::trackmap::outline_for(&s.map_track);
     let nodes: Vec<Node> = s
         .nodes
         .iter()
@@ -67,15 +169,22 @@ pub fn build_screen(s: &State, display: u8) -> Screen {
                 w: m.w.max(0) as u32,
                 h: m.h.max(0) as u32,
             },
-            kind: kind_of(m),
+            kind: kind_of(m, rev, &map),
+            page: m.page.clamp(0, 255) as u8,
         })
         .collect();
+    let tabs = s
+        .tabs
+        .get(display as usize)
+        .cloned()
+        .unwrap_or_default();
     Screen {
         display,
         w: SCREEN_W,
         h: SCREEN_H,
         bg: Pal::Bg,
         nodes,
+        tabs,
     }
 }
 
@@ -107,9 +216,13 @@ fn current_telemetry(s: &State) -> Telemetry {
 
 /// Render `screen` against live telemetry into a slint image, using the device's
 /// own pith-ui renderer + fonts (pixel-identical mirror).
-fn render_image(screen: &Screen, t: &Telemetry) -> slint::Image {
+fn render_image(screen: &Screen, active_tab: u8, t: &Telemetry) -> slint::Image {
     let mut fb = pith_ui::Framebuffer::new(screen.w, screen.h);
-    pith_ui::render_screen(screen, t, 0, &mut fb);
+    if screen.tabs.is_empty() {
+        pith_ui::render_screen(screen, t, 0, &mut fb);
+    } else {
+        pith_ui::render_tabbed(screen, active_tab, t, 0, &mut fb);
+    }
     let mut buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(screen.w, screen.h);
     buf.make_mut_bytes().copy_from_slice(&fb.to_rgba8());
     slint::Image::from_rgba8(buf)
@@ -121,7 +234,7 @@ fn render_image(screen: &Screen, t: &Telemetry) -> slint::Image {
 pub fn push_preview(ui: &AppWindow, s: &State) {
     let screen = build_screen(s, s.edit_display);
     let t = current_telemetry(s);
-    let img = render_image(&screen, &t);
+    let img = render_image(&screen, s.edit_tab.clamp(0, 255) as u8, &t);
     ui.global::<RaceLayout>().set_preview_image(img);
 }
 

@@ -1,7 +1,7 @@
 // Shared structs, enums and global singletons. C++ owns the data and writes
 // these globals; the UI reads them and invokes callbacks for actions.
 
-export enum Page { overview, race, buttons, shift, cars, simhub, firmware, device }
+export enum Page { overview, race, shift, cars, simhub, firmware, device }
 
 // ---- SimHub custom-serial builder ----
 export struct SimField { id: string, label: string, expr: string, enabled: bool, builtin: bool }
@@ -141,6 +141,9 @@ export struct ZoneModule {
     fmt: string, scale: int, base: string, rule-summary: string,
     size: int,   // text size as % of box height (0 = auto-fit)
     x: int, y: int, w: int, h: int,   // freeform rect (device px)
+    // button nodes: HID joystick button (1..32) + latch/momentary
+    toggle: bool, hid: int,
+    page: int,   // tab page this node is on (when the display is tabbed)
     // option-list indices for ComboBox current-index (Slint ignores current-value writes)
     kind-idx: int, field-idx: int, fmt-idx: int, base-idx: int,
 }
@@ -154,6 +157,15 @@ export struct NodeBox {
 
 // A device-pixel point (used as the snapped drag delta returned by node-snap).
 export struct Pt { x: int, y: int }
+
+// One element inside the selected widget's tree (list row + inline editor fields).
+export struct ElemRow {
+    idx: int, kind: string, summary: string, selected: bool,
+    flex: int, field: string, text: string, base: string, size: int,
+    align: int, valign: int, action: string,
+    toggle: bool, hid: int,
+    kind-idx: int, field-idx: int, base-idx: int,
+}
 export struct LayoutZone { key: string, title: string, modules: [ZoneModule] }
 export struct PresetCard { name: string, summary: string, active: bool, builtin: bool }
 export struct ModuleDef { type: string, name: string, desc: string }   // catalog entry
@@ -179,6 +191,20 @@ export global RaceLayout {
     in-out property <[NodeBox]> nodes: [];              // freeform node overlays (current display)
     in-out property <int> edit-display: 0;             // which display the editor is showing (0/1)
     in property <int> display-count: 1;                // # of displays the device exposes
+    // tab pages for the current display (empty = not tabbed). Buttons/widgets are
+    // assigned to a page; the device shows a tab strip + the active page.
+    in-out property <[string]> tab-names: [];
+    in-out property <int> edit-tab: 0;                  // tab page shown in the editor
+    callback tabs-enable(bool);                         // turn tabbing on/off for the current display
+    callback tab-add();
+    callback tab-rename(int /*idx*/, string);
+    callback tab-remove(int /*idx*/);
+    callback tab-select(int /*idx*/);
+    callback set-mod-page(int /*tab page for the selected node*/);
+    // track map: which bundled track outline the Map widget shows (baked into @UI)
+    in-out property <[string]> map-tracks: [];
+    in-out property <int> map-track-idx: 0;
+    callback set-map-track(string);
     in-out property <[ModuleDef]> catalog: [];          // module templates you can add
     in property <string> main-res: "480×320";           // main display resolution (from caps)
     in-out property <bool> dirty: false;                // unsaved changes
@@ -211,6 +237,8 @@ export global RaceLayout {
     callback set-mod-fmt(string);
     callback set-mod-base(string);
     callback set-mod-size(int);
+    callback set-mod-toggle(bool);   // button node: latch vs momentary
+    callback set-mod-hid(int);       // button node: HID joystick button 1..32
     callback add-rule();
     callback set-rule(int /*idx*/, string /*op*/, string /*v*/, string /*color*/);
     callback remove-rule(int /*idx*/);
@@ -220,6 +248,7 @@ export global RaceLayout {
     callback node-select(string /*id*/);
     callback node-add(string /*type*/);                 // add a node to the current display
     callback node-remove(string /*id*/);
+    callback delete-selected();                         // Delete key: drop the selected element, else the selected widget
     callback node-drag-start(string /*id*/);            // begin a move/resize gesture
     callback node-move(int /*dx*/, int /*dy*/);         // device-px delta from gesture start
     callback node-resize(int /*dw*/, int /*dh*/);       // device-px size delta from gesture start
@@ -237,6 +266,32 @@ export global RaceLayout {
     callback node-center-v();    // centre vertically (screen Y)
     callback node-align-h();     // align Y to the nearest other node (a row)
     callback node-align-v();     // align X to the nearest other node (a column)
+    // --- widget tree editor (the selected widget's internal elements) ---
+    in-out property <bool> widget-custom: false;   // selected widget is a custom tree
+    in-out property <int> widget-dir: 0;           // root layout: 0 = column, 1 = row
+    in-out property <int> widget-gap: 4;
+    in-out property <[ElemRow]> elems: [];         // elements of the selected widget
+    in-out property <int> sel-elem: -1;
+    in-out property <[string]> elem-kinds: [];     // element types you can add
+    callback widget-customize();                   // seed the tree from the built-in
+    callback widget-reset();                       // back to the built-in (clear the tree)
+    callback set-widget-dir(int);
+    callback set-widget-gap(int);
+    callback elem-add(string /*kind*/);
+    callback elem-remove(int /*idx*/);
+    callback elem-move(int /*idx*/, int /*dir: -1 up / +1 down*/);
+    callback elem-select(int /*idx*/);
+    callback set-elem-kind(string);
+    callback set-elem-field(string);
+    callback set-elem-text(string);
+    callback set-elem-base(string);
+    callback set-elem-size(int);
+    callback set-elem-align(int);
+    callback set-elem-valign(int);
+    callback set-elem-flex(int);
+    callback set-elem-action(string);
+    callback set-elem-toggle(bool);  // button element: latch vs momentary
+    callback set-elem-hid(int);      // button element: HID joystick button 1..32
 }
 
 // ---- Car library / lovely-car-data (§6) ----

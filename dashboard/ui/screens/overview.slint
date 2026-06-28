@@ -138,11 +138,11 @@ export component OverviewScreen inherits Rectangle {
                 spacing: 16px;
                 height: 168px;
                 QuickCard {
-                    clicked => { AppState.page = Page.buttons; }
+                    clicked => { AppState.page = Page.race; }
                     VerticalLayout { padding: 16px; spacing: 8px;
                         Text { text: "BUTTONS"; color: Theme.text3; font-family: Theme.display-font; font-size: 11px; letter-spacing: 1.2px; }
-                        Text { text: DeviceCaps.button-pages + " pages · 6 tiles each"; color: Theme.text2; font-size: 14px; }
-                        Mono { text: "Side · " + DeviceCaps.side-res; color: Theme.text3; font-size: 12px; }
+                        Text { text: "Now widgets — place on any screen"; color: Theme.text2; font-size: 14px; }
+                        Mono { text: "Race editor → Add → Button"; color: Theme.text3; font-size: 12px; }
                         Rectangle { }
                     }
                 }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use slint::{Color, SharedString};
 
-use crate::catalog::{default_spec, PINDEFS, PIN_N};
+use crate::catalog::{default_els, default_spec, PINDEFS, PIN_N};
 use crate::clipboard::copy_to_clipboard;
 use crate::ctx::Ctx;
 use crate::persist::*;
@@ -40,6 +40,34 @@ fn with_selected<F: FnOnce(&mut ModSpec)>(u: &AppWindow, s: &mut State, f: F) ->
 const CANVAS_W: i32 = 480;
 const CANVAS_H: i32 = 320;
 const SNAP_PX: i32 = 6;
+
+/// Run `f` on the selected element of the selected widget.
+fn with_sel_elem<F: FnOnce(&mut crate::state::ElemSpec)>(
+    u: &AppWindow,
+    s: &mut State,
+    f: F,
+) -> bool {
+    let id = u.global::<RaceLayout>().get_sel_id().to_string();
+    let ei = s.sel_elem;
+    if ei < 0 {
+        return false;
+    }
+    if let Some(m) = s.nodes.iter_mut().find(|m| m.id == id) {
+        if let Some(e) = m.els.get_mut(ei as usize) {
+            f(e);
+            return true;
+        }
+    }
+    false
+}
+
+fn elem_id_from_name(name: &str) -> String {
+    crate::catalog::ELEM_KINDS
+        .iter()
+        .find(|k| k.1 == name)
+        .map(|k| k.0.to_string())
+        .unwrap_or_else(|| "label".into())
+}
 
 /// Snap a dragged node's rect to alignment guides: the screen centre/edges and
 /// every other node's left/centre/right + top/centre/bottom. Returns the snapped
@@ -208,9 +236,17 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
         let c = ctx.clone();
         s.on_persist(move || {
             if let Some(u) = c.ui.upgrade() {
-                let mut st = c.lock();
-                pull_shift_scalars(&u, &mut st);
-                save_shift_cfg(&st);
+                let bright = {
+                    let mut st = c.lock();
+                    pull_shift_scalars(&u, &mut st);
+                    save_shift_cfg(&st);
+                    st.brightness
+                };
+                // Push brightness live so the user can dial down very bright LEDs and
+                // see it on the strip immediately (device skips NVS writes when unchanged).
+                if c.dash().connected() {
+                    c.dash().set_brightness(bright);
+                }
             }
         });
     }
@@ -387,6 +423,24 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
             }
         });
         let c = ctx.clone();
+        rl.on_set_mod_toggle(move |v| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                with_selected(&u, &mut st, |m| m.toggle = v);
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+        let c = ctx.clone();
+        rl.on_set_mod_hid(move |v| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                with_selected(&u, &mut st, |m| m.hid = v.clamp(0, 32));
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+        let c = ctx.clone();
         rl.on_add_rule(move || {
             if let Some(u) = c.ui.upgrade() {
                 let mut st = c.lock();
@@ -473,9 +527,15 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
         rl.on_node_select(move |id: SharedString| {
             if let Some(u) = c.ui.upgrade() {
                 u.global::<RaceLayout>().set_sel_id(id);
-                let st = c.lock();
+                let mut st = c.lock();
+                st.sel_elem = -1;
+                // Refresh ONLY the side panel here. The overlay's selected highlight
+                // derives reactively from sel-id in Slint, so we must NOT call
+                // push_nodes — rebuilding the node model on pointer-down (select fires
+                // at the start of a drag) would destroy the overlay TouchArea that
+                // captured the press and kill the in-progress drag/resize gesture.
                 push_edit_module(&u, &st);
-                crate::ui_bridge::race::push_nodes(&u, &st);
+                crate::ui_bridge::race::push_elems(&u, &st);
             }
         });
         let c = ctx.clone();
@@ -487,11 +547,35 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
                 st.uid += 1;
                 m.id = id.clone();
                 m.display = st.edit_display;
+                // On a tabbed display, the new node belongs to the active tab page.
+                if !st.tabs[st.edit_display as usize].is_empty() {
+                    m.page = st.edit_tab;
+                }
                 // Drop a default 140×70 box near the middle of the panel.
                 m.x = 170;
                 m.y = 125;
                 m.w = 140;
                 m.h = 70;
+                // Buttons get the smallest unused HID joystick number (1..=32) across
+                // every existing button — node OR element — so two buttons never share
+                // an index and adding/removing one never shifts the others. 0 (none) if
+                // all 32 are taken; the user can then reassign manually.
+                if m.kind == "button" {
+                    let mut used = [false; 33]; // 1..=32
+                    for n in &st.nodes {
+                        if n.kind == "button" && (1..=32).contains(&n.hid) {
+                            used[n.hid as usize] = true;
+                        }
+                        for e in &n.els {
+                            if e.kind == "button" && (1..=32).contains(&e.hid) {
+                                used[e.hid as usize] = true;
+                            }
+                        }
+                    }
+                    m.hid = (1..=32).find(|&i| !used[i as usize]).unwrap_or(0);
+                    m.w = 96;
+                    m.h = 56;
+                }
                 st.nodes.push(m);
                 u.global::<RaceLayout>().set_sel_id(sstr(&id));
                 mark_dirty(&u, &st);
@@ -508,6 +592,32 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
                 }
                 mark_dirty(&u, &st);
                 refresh_race(&u, &st);
+            }
+        });
+        // Delete key in the editor: if a customised-widget element is selected drop
+        // that element, otherwise remove the whole selected widget (node).
+        let c = ctx.clone();
+        rl.on_delete_selected(move || {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                let id = u.global::<RaceLayout>().get_sel_id().to_string();
+                let ei = st.sel_elem;
+                if ei >= 0 {
+                    // remove the selected element from the selected widget's tree
+                    if let Some(m) = st.nodes.iter_mut().find(|m| m.id == id) {
+                        if (ei as usize) < m.els.len() {
+                            m.els.remove(ei as usize);
+                        }
+                    }
+                    st.sel_elem = -1;
+                    mark_dirty(&u, &st);
+                    refresh_race(&u, &st);
+                } else if !id.is_empty() {
+                    st.nodes.retain(|m| m.id != id);
+                    u.global::<RaceLayout>().set_sel_id(sstr(""));
+                    mark_dirty(&u, &st);
+                    refresh_race(&u, &st);
+                }
             }
         });
         let c = ctx.clone();
@@ -550,11 +660,23 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
         rl.on_node_drag_end(move || {
             if let Some(u) = c.ui.upgrade() {
                 let mut st = c.lock();
-                st.drag_origin = None;
+                // only dirty the layout if the gesture actually changed the rect
+                // (a plain click to select shouldn't mark everything unsaved)
+                let changed = if let Some((id, ox, oy, ow, oh)) = st.drag_origin.take() {
+                    st.nodes
+                        .iter()
+                        .find(|m| m.id == id)
+                        .map(|m| m.x != ox || m.y != oy || m.w != ow || m.h != oh)
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
                 let rl = u.global::<RaceLayout>();
                 rl.set_snap_vx(-1);
                 rl.set_snap_hy(-1);
-                mark_dirty(&u, &st);
+                if changed {
+                    mark_dirty(&u, &st);
+                }
                 refresh_race(&u, &st);
             }
         });
@@ -637,7 +759,271 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
             if let Some(u) = c.ui.upgrade() {
                 let mut st = c.lock();
                 st.edit_display = d.clamp(0, 1) as u8;
+                st.edit_tab = 0;
+                st.sel_elem = -1;
                 u.global::<RaceLayout>().set_sel_id(sstr(""));
+                refresh_race(&u, &st);
+            }
+        });
+
+        // --- tab pages (paged button banks on a display) ---
+        let c = ctx.clone();
+        rl.on_tabs_enable(move |on| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                let d = st.edit_display as usize;
+                if on && st.tabs[d].is_empty() {
+                    st.tabs[d] = vec!["Tab 1".to_string()];
+                    st.edit_tab = 0;
+                } else if !on {
+                    // dropping tabs collapses every node back onto page 0
+                    st.tabs[d].clear();
+                    for m in st.nodes.iter_mut().filter(|m| m.display as usize == d) {
+                        m.page = 0;
+                    }
+                    st.edit_tab = 0;
+                }
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+        let c = ctx.clone();
+        rl.on_tab_add(move || {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                let d = st.edit_display as usize;
+                if st.tabs[d].len() < 8 {
+                    let n = st.tabs[d].len() + 1;
+                    st.tabs[d].push(format!("Tab {n}"));
+                    st.edit_tab = st.tabs[d].len() as i32 - 1;
+                }
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+        let c = ctx.clone();
+        rl.on_tab_rename(move |idx, name: SharedString| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                let d = st.edit_display as usize;
+                if idx >= 0 && (idx as usize) < st.tabs[d].len() {
+                    st.tabs[d][idx as usize] = name.to_string();
+                }
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+        let c = ctx.clone();
+        rl.on_tab_remove(move |idx| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                let d = st.edit_display as usize;
+                let n = st.tabs[d].len() as i32;
+                if idx >= 0 && idx < n && n > 1 {
+                    let removed = idx as usize;
+                    st.tabs[d].remove(removed);
+                    // drop nodes on the removed page; shift higher pages down one
+                    st.nodes.retain(|m| !(m.display as usize == d && m.page == idx));
+                    for m in st.nodes.iter_mut().filter(|m| m.display as usize == d && m.page > idx) {
+                        m.page -= 1;
+                    }
+                    st.edit_tab = st.edit_tab.min(st.tabs[d].len() as i32 - 1).max(0);
+                    u.global::<RaceLayout>().set_sel_id(sstr(""));
+                }
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+        let c = ctx.clone();
+        rl.on_tab_select(move |idx| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                let d = st.edit_display as usize;
+                if idx >= 0 && (idx as usize) < st.tabs[d].len() {
+                    st.edit_tab = idx;
+                    st.sel_elem = -1;
+                    u.global::<RaceLayout>().set_sel_id(sstr(""));
+                }
+                refresh_race(&u, &st);
+            }
+        });
+        let c = ctx.clone();
+        rl.on_set_mod_page(move |p| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                let max = st.tabs[st.edit_display as usize].len() as i32 - 1;
+                with_selected(&u, &mut st, |m| m.page = p.clamp(0, max.max(0)));
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+        let c = ctx.clone();
+        rl.on_set_map_track(move |name: SharedString| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                st.map_track = name.to_string();
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+
+        // --- widget tree editor (the selected widget's internal elements) ---
+        let c = ctx.clone();
+        rl.on_widget_customize(move || {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                let id = u.global::<RaceLayout>().get_sel_id().to_string();
+                if let Some(idx) = st.nodes.iter().position(|m| m.id == id) {
+                    if st.nodes[idx].els.is_empty() {
+                        let els = default_els(&st.nodes[idx]);
+                        st.nodes[idx].els = els;
+                        st.sel_elem = 0;
+                    }
+                }
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+        let c = ctx.clone();
+        rl.on_widget_reset(move || {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                with_selected(&u, &mut st, |m| m.els.clear());
+                st.sel_elem = -1;
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+        let c = ctx.clone();
+        rl.on_set_widget_dir(move |d| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                with_selected(&u, &mut st, |m| m.dir = d.clamp(0, 1));
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+        let c = ctx.clone();
+        rl.on_set_widget_gap(move |g| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                with_selected(&u, &mut st, |m| m.gap = g.clamp(0, 60));
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+        let c = ctx.clone();
+        rl.on_elem_add(move |name: SharedString| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                let kind = elem_id_from_name(name.as_str());
+                let added = with_selected(&u, &mut st, |m| {
+                    m.els.push(crate::state::ElemSpec {
+                        kind,
+                        ..Default::default()
+                    });
+                });
+                if added {
+                    let id = u.global::<RaceLayout>().get_sel_id().to_string();
+                    if let Some(m) = st.nodes.iter().find(|m| m.id == id) {
+                        st.sel_elem = m.els.len() as i32 - 1;
+                    }
+                }
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+        let c = ctx.clone();
+        rl.on_elem_remove(move |idx| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                with_selected(&u, &mut st, |m| {
+                    if idx >= 0 && (idx as usize) < m.els.len() {
+                        m.els.remove(idx as usize);
+                    }
+                });
+                st.sel_elem = -1;
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+        let c = ctx.clone();
+        rl.on_elem_move(move |idx, dir| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                let mut new_sel = st.sel_elem;
+                with_selected(&u, &mut st, |m| {
+                    let n = m.els.len() as i32;
+                    let to = idx + dir;
+                    if idx >= 0 && idx < n && to >= 0 && to < n {
+                        m.els.swap(idx as usize, to as usize);
+                        new_sel = to;
+                    }
+                });
+                st.sel_elem = new_sel;
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+        let c = ctx.clone();
+        rl.on_elem_select(move |idx| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                st.sel_elem = idx;
+                refresh_race(&u, &st);
+            }
+        });
+        macro_rules! elem_str_setter {
+            ($method:ident, $field:ident) => {{
+                let c = ctx.clone();
+                rl.$method(move |v: SharedString| {
+                    if let Some(u) = c.ui.upgrade() {
+                        let mut st = c.lock();
+                        with_sel_elem(&u, &mut st, |e| e.$field = v.to_string());
+                        mark_dirty(&u, &st);
+                        refresh_race(&u, &st);
+                    }
+                });
+            }};
+        }
+        elem_str_setter!(on_set_elem_field, field);
+        elem_str_setter!(on_set_elem_text, text);
+        elem_str_setter!(on_set_elem_base, base);
+        elem_str_setter!(on_set_elem_action, action);
+        let c = ctx.clone();
+        rl.on_set_elem_kind(move |name: SharedString| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                let kind = elem_id_from_name(name.as_str());
+                with_sel_elem(&u, &mut st, |e| e.kind = kind);
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+        macro_rules! elem_int_setter {
+            ($method:ident, $field:ident, $lo:expr, $hi:expr) => {{
+                let c = ctx.clone();
+                rl.$method(move |v| {
+                    if let Some(u) = c.ui.upgrade() {
+                        let mut st = c.lock();
+                        with_sel_elem(&u, &mut st, |e| e.$field = v.clamp($lo, $hi));
+                        mark_dirty(&u, &st);
+                        refresh_race(&u, &st);
+                    }
+                });
+            }};
+        }
+        elem_int_setter!(on_set_elem_size, size, 0, 100);
+        elem_int_setter!(on_set_elem_align, align, 0, 2);
+        elem_int_setter!(on_set_elem_valign, valign, 0, 2);
+        elem_int_setter!(on_set_elem_flex, flex, 1, 12);
+        elem_int_setter!(on_set_elem_hid, hid, 0, 32);
+        let c = ctx.clone();
+        rl.on_set_elem_toggle(move |v| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                with_sel_elem(&u, &mut st, |e| e.toggle = v);
+                mark_dirty(&u, &st);
                 refresh_race(&u, &st);
             }
         });

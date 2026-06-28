@@ -82,6 +82,9 @@ pub fn to_zone_module(m: &ModSpec) -> ZoneModule {
         y: m.y,
         w: m.w,
         h: m.h,
+        toggle: m.toggle,
+        hid: m.hid,
+        page: m.page,
         kind_idx: idx_of(&KIND_OPTIONS, &m.kind),
         field_idx: if fid > 0 { fid as i32 - 1 } else { -1 },
         fmt_idx: if m.fmt_type.is_empty() {
@@ -115,10 +118,13 @@ pub fn push_zones(ui: &AppWindow, s: &State) {
 pub fn push_nodes(ui: &AppWindow, s: &State) {
     let rl = ui.global::<RaceLayout>();
     let sel = rl.get_sel_id().to_string();
+    let tabs = s.tabs.get(s.edit_display as usize).cloned().unwrap_or_default();
+    let tabbed = !tabs.is_empty();
     let boxes: Vec<NodeBox> = s
         .nodes
         .iter()
-        .filter(|m| m.display == s.edit_display)
+        // on a tabbed display, only show the active page's nodes (matches the device)
+        .filter(|m| m.display == s.edit_display && (!tabbed || m.page == s.edit_tab))
         .map(|m| NodeBox {
             id: sstr(&m.id),
             x: m.x,
@@ -133,6 +139,9 @@ pub fn push_nodes(ui: &AppWindow, s: &State) {
     rl.set_nodes(model(boxes));
     rl.set_edit_display(s.edit_display as i32);
     rl.set_display_count(2); // the DDU drives two ST7796 panels
+    let names: Vec<SharedString> = tabs.iter().map(|t| sstr(t)).collect();
+    rl.set_tab_names(model(names));
+    rl.set_edit_tab(s.edit_tab);
 }
 
 pub fn push_presets(ui: &AppWindow, s: &State) {
@@ -269,7 +278,69 @@ pub fn push_edit_module(ui: &AppWindow, s: &State) {
     rl.set_edit_rules(model(rr));
 }
 
-pub fn push_editor_options(ui: &AppWindow, _s: &State) {
+/// Push the selected widget's editable element tree (element list + layout state)
+/// to the editor. Empty when no widget is selected / it isn't customised yet.
+pub fn push_elems(ui: &AppWindow, s: &State) {
+    use crate::catalog::{elem_kind_name, ELEM_KINDS};
+    use crate::telemetry::PALETTE_TOKENS;
+    use crate::ElemRow;
+
+    let rl = ui.global::<RaceLayout>();
+    let id = rl.get_sel_id().to_string();
+    let node = s.nodes.iter().find(|m| m.id == id);
+    let custom = node.map(|m| !m.els.is_empty()).unwrap_or(false);
+    rl.set_widget_custom(custom);
+    if let Some(m) = node {
+        rl.set_widget_dir(m.dir);
+        rl.set_widget_gap(m.gap);
+    }
+    let sel = s.sel_elem;
+    let rows: Vec<ElemRow> = node
+        .map(|m| {
+            m.els
+                .iter()
+                .enumerate()
+                .map(|(i, e)| {
+                    let summary = if !e.text.is_empty() {
+                        e.text.clone()
+                    } else if !e.field.is_empty() {
+                        e.field.clone()
+                    } else {
+                        String::new()
+                    };
+                    ElemRow {
+                        idx: i as i32,
+                        kind: sstr(elem_kind_name(&e.kind)),
+                        summary: sstr(&summary),
+                        selected: i as i32 == sel,
+                        flex: e.flex,
+                        field: sstr(&e.field),
+                        text: sstr(&e.text),
+                        base: sstr(&e.base),
+                        size: e.size,
+                        align: e.align,
+                        valign: e.valign,
+                        action: sstr(&e.action),
+                        toggle: e.toggle,
+                        hid: e.hid,
+                        kind_idx: ELEM_KINDS.iter().position(|k| k.0 == e.kind).map(|i| i as i32).unwrap_or(0),
+                        field_idx: {
+                            let fid = field_id_from_str(&e.field);
+                            if fid > 0 { fid as i32 - 1 } else { -1 }
+                        },
+                        base_idx: idx_of(&PALETTE_TOKENS, &e.base),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    rl.set_elems(model(rows));
+    rl.set_sel_elem(sel);
+    let kinds: Vec<SharedString> = ELEM_KINDS.iter().map(|k| sstr(k.1)).collect();
+    rl.set_elem_kinds(model(kinds));
+}
+
+pub fn push_editor_options(ui: &AppWindow, s: &State) {
     let rl = ui.global::<RaceLayout>();
     let fields: Vec<SharedString> = FIELDS.iter().map(|f| sstr(f.name)).collect();
     let kinds: Vec<SharedString> = KIND_OPTIONS.iter().map(|k| sstr(k)).collect();
@@ -279,4 +350,7 @@ pub fn push_editor_options(ui: &AppWindow, _s: &State) {
     rl.set_kind_options(model(kinds));
     rl.set_palette_options(model(palette));
     rl.set_fmt_options(model(fmts));
+    let tracks: Vec<SharedString> = crate::trackmap::TRACK_NAMES.iter().map(|t| sstr(t)).collect();
+    rl.set_map_tracks(model(tracks));
+    rl.set_map_track_idx(crate::trackmap::track_index(&s.map_track));
 }

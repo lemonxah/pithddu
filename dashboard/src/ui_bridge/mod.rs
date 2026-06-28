@@ -40,5 +40,6 @@ pub fn refresh_race(ui: &crate::AppWindow, s: &crate::state::State) {
     race::push_presets(ui, s);
     race::push_resolved(ui, s);
     race::push_edit_module(ui, s);
+    race::push_elems(ui, s);
     uidoc::push_preview(ui, s);
 }
