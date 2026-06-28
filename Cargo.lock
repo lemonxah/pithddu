@@ -3814,19 +3814,33 @@ version = "0.7.0"
 dependencies = [
  "flate2",
  "futures-util",
- "hidapi",
  "ksni",
  "libc",
  "pith-core",
+ "pith-device",
  "pith-ui",
  "reqwest",
  "serde",
  "serde_json",
- "serialport",
  "slint",
  "slint-build",
  "tar",
  "tokio",
+]
+
+[[package]]
+name = "pith-device"
+version = "0.1.0"
+dependencies = [
+ "hidapi",
+ "serialport",
+]
+
+[[package]]
+name = "pith-flash"
+version = "0.1.0"
+dependencies = [
+ "pith-device",
 ]
 
 [[package]]

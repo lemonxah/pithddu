@@ -51,6 +51,109 @@ impl FrameBuf {
             self.data[(y * self.w + x) as usize] = c;
         }
     }
+
+    /// Diagnostic touch indicator: a translucent dot + white crosshair at (cx,cy)
+    /// plus a ring that expands and fades as `fade` drops from `fade_max` to 0
+    /// (i.e. after release). Lets you eyeball whether the touch X/Y matches your
+    /// finger. RGB565 has no alpha, so colours are blended by hand.
+    fn draw_touch_marker(&mut self, cx: i32, cy: i32, fade: u8, fade_max: u8) {
+        #[inline]
+        fn blend(bg: Rgb565, fg: Rgb565, a: u16) -> Rgb565 {
+            let inv = 256 - a;
+            let r = ((bg.r() as u16 * inv + fg.r() as u16 * a) >> 8) as u8;
+            let g = ((bg.g() as u16 * inv + fg.g() as u16 * a) >> 8) as u8;
+            let b = ((bg.b() as u16 * inv + fg.b() as u16 * a) >> 8) as u8;
+            Rgb565::new(r, g, b)
+        }
+        let fade_max = fade_max.max(1) as i32;
+        let f = fade as i32; // fade_max while held -> 0 when gone
+        let frac = (f * 256 / fade_max).clamp(0, 256) as u16; // overall opacity
+        let accent = Rgb565::new(0, 63, 31); // bright cyan
+        let white = Rgb565::WHITE;
+
+        // translucent filled dot
+        let r_dot: i32 = 9;
+        let dot_a = (frac * 120 / 256).min(255);
+        for dy in -r_dot..=r_dot {
+            for dx in -r_dot..=r_dot {
+                if dx * dx + dy * dy <= r_dot * r_dot {
+                    let (x, y) = (cx + dx, cy + dy);
+                    if x >= 0 && y >= 0 && x < self.w && y < self.h {
+                        let idx = (y * self.w + x) as usize;
+                        self.data[idx] = blend(self.data[idx], accent, dot_a);
+                    }
+                }
+            }
+        }
+        // white crosshair marking the exact pixel
+        for k in -(r_dot + 3)..=(r_dot + 3) {
+            self.put(cx + k, cy, white);
+            self.put(cx, cy + k, white);
+        }
+        // ring that grows + fades after release
+        let grow = (fade_max - f) * 3;
+        let rr = r_dot + 4 + grow;
+        let ring_a = frac.min(255);
+        let (r0, r1) = ((rr - 1) * (rr - 1), (rr + 1) * (rr + 1));
+        for dy in -(rr + 1)..=(rr + 1) {
+            for dx in -(rr + 1)..=(rr + 1) {
+                let d2 = dx * dx + dy * dy;
+                if d2 >= r0 && d2 <= r1 {
+                    let (x, y) = (cx + dx, cy + dy);
+                    if x >= 0 && y >= 0 && x < self.w && y < self.h {
+                        let idx = (y * self.w + x) as usize;
+                        self.data[idx] = blend(self.data[idx], accent, ring_a);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Dedicated TOUCH_DIAG screen: a cheap full-clear + reference grid + orange
+    /// corner/centre crosses + the live touch marker. No widget rendering, so it's
+    /// fast (the overlay-on-live-UI approach forced a full repaint each frame).
+    /// Touch a known reference and see whether the marker lands on it.
+    fn render_touch_test(&mut self, mark: Option<(i32, i32)>, fade: u8, fade_max: u8) {
+        let bg = Rgb565::new(2, 4, 6);
+        for p in self.data.iter_mut() {
+            *p = bg;
+        }
+        let grid = Rgb565::new(5, 10, 16);
+        let mut gx = 0;
+        while gx < self.w {
+            for y in 0..self.h {
+                self.put(gx, y, grid);
+            }
+            gx += 60;
+        }
+        let mut gy = 0;
+        while gy < self.h {
+            for x in 0..self.w {
+                self.put(x, gy, grid);
+            }
+            gy += 60;
+        }
+        // orange reference crosses at the four corners + centre
+        let oc = Rgb565::new(31, 24, 0);
+        let refs = [
+            (8, 8),
+            (self.w - 8, 8),
+            (8, self.h - 8),
+            (self.w - 8, self.h - 8),
+            (self.w / 2, self.h / 2),
+        ];
+        for (rx, ry) in refs {
+            for k in -7..=7 {
+                self.put(rx + k, ry, oc);
+                self.put(rx, ry + k, oc);
+            }
+        }
+        if let Some((mx, my)) = mark {
+            if fade > 0 {
+                self.draw_touch_marker(mx, my, fade, fade_max);
+            }
+        }
+    }
 }
 
 /// Stream a whole framebuffer to a panel in one windowed write (DMA). A macro
@@ -151,19 +254,43 @@ impl embedded_hal::digital::OutputPin for SharedDc {
 fn xpt_read<S: embedded_hal::spi::SpiDevice>(dev: &mut S, cmd: u8) -> u16 {
     let mut buf = [cmd, 0, 0];
     let _ = dev.transfer_in_place(&mut buf);
-    (((buf[1] as u16) << 8) | buf[2] as u16) >> 3
+    // 12-bit result sits in bits [14:3] after a leading busy bit. The old code
+    // forgot the 0x0FFF mask, so the busy bit leaked in as +4096 — that alone
+    // pushed every z1 read over Z_THRESH (or corrupted X/Y), so touch could read
+    // as permanently pressed or never settle.
+    ((((buf[1] as u16) << 8) | buf[2] as u16) >> 3) & 0x0FFF
 }
+
+/// When DIAG is on, periodically log raw touch reads so a dead touch panel can be
+/// diagnosed over serial (idle baseline + any press). Set false once it works.
+const TOUCH_DIAG: bool = true;
+static TOUCH_DIAG_TICK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Read the touch panel; returns screen coords if pressed.
 fn read_touch<S: embedded_hal::spi::SpiDevice>(dev: &mut S) -> Option<(i32, i32)> {
     let z1 = xpt_read(dev, 0xB0);
+    let rx = xpt_read(dev, 0xD0) as i32; // X
+    let ry = xpt_read(dev, 0x90) as i32; // Y
+    if TOUCH_DIAG {
+        // Log every ~64th idle poll (baseline), and every read that crosses the
+        // pressure threshold (a real touch) — so we can see if z1/rx/ry move.
+        let n = TOUCH_DIAG_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if z1 >= Z_THRESH || n % 64 == 0 {
+            log::warn!("touch raw: z1={z1} rx={rx} ry={ry} (thresh={Z_THRESH})");
+        }
+    }
     if z1 < Z_THRESH {
         return None;
     }
-    let rx = xpt_read(dev, 0xD0) as i32; // X
-    let ry = xpt_read(dev, 0x90) as i32; // Y
-    let sx = ((rx - X_MIN) * ui::W / (X_MAX - X_MIN)).clamp(0, ui::W - 1);
-    let sy = ((ry - Y_MIN) * ui::H / (Y_MAX - Y_MIN)).clamp(0, ui::H - 1);
+    // Normalise to 0..1000 in the panel-native touch axes…
+    let nx = ((rx - X_MIN) * 1000 / (X_MAX - X_MIN)).clamp(0, 1000);
+    let ny = ((ry - Y_MIN) * 1000 / (Y_MAX - Y_MIN)).clamp(0, 1000);
+    // …then rotate into the displayed 480×320 space. This panel renders at 270°
+    // + horizontal flip, so the native X axis runs DOWN the screen and the native
+    // Y axis runs ACROSS it: swap, and invert the vertical. (These constants +
+    // rotation will become per-screen, set by the calibration wizard.)
+    let sx = (ny * (ui::W - 1) / 1000).clamp(0, ui::W - 1);
+    let sy = ((1000 - nx) * (ui::H - 1) / 1000).clamp(0, ui::H - 1);
     Some((sx, sy))
 }
 
@@ -276,6 +403,13 @@ fn display_task() {
     // active tab page per panel (for tabbed screens)
     let mut race_tab: u8 = 0;
     let mut side_tab: u8 = 0;
+    // TOUCH_DIAG: last touch point + fade countdown per panel, so we can draw a
+    // marker where the firmware thinks you touched (verifies the X/Y mapping).
+    let mut race_mark: Option<(i32, i32)> = None;
+    let mut race_fade: u8 = 0;
+    let mut side_mark: Option<(i32, i32)> = None;
+    let mut side_fade: u8 = 0;
+    const MARK_FADE: u8 = 12; // ~12 frames * 33 ms ≈ 0.4 s ripple-out on release
 
     // pith-ui dirty-rect state (one cache per physical panel). The active layout is
     // cloned locally and only refreshed when the dashboard pushes a new UiDoc
@@ -333,6 +467,15 @@ fn display_task() {
 
         // --- touch: race panel (UiDoc buttons / config nav / slider / sim / reboot) ---
         let race_touch = if race_is_1 { read_touch(&mut t1) } else { read_touch(&mut t2) };
+        if TOUCH_DIAG {
+            match race_touch {
+                Some((tx, ty)) => {
+                    race_mark = Some((tx, ty));
+                    race_fade = MARK_FADE;
+                }
+                None => race_fade = race_fade.saturating_sub(1),
+            }
+        }
         match race_touch {
             Some((tx, ty)) => {
                 last_touch_ms = now;
@@ -382,6 +525,15 @@ fn display_task() {
 
         // --- touch: side/button panel ---
         let btn_touch = if race_is_1 { read_touch(&mut t2) } else { read_touch(&mut t1) };
+        if TOUCH_DIAG {
+            match btn_touch {
+                Some((tx, ty)) => {
+                    side_mark = Some((tx, ty));
+                    side_fade = MARK_FADE;
+                }
+                None => side_fade = side_fade.saturating_sub(1),
+            }
+        }
         // Prefer UiDoc buttons placed on display 1; fall back to the legacy button box.
         let has_side_ui = local_doc
             .as_ref()
@@ -411,18 +563,25 @@ fn display_task() {
         // --- render: side/button panel first (shared-bus ordering) ---
         {
             let fb = if race_is_1 { &mut fb2 } else { &mut fb1 };
-            let side_scr = local_doc
-                .as_ref()
-                .and_then(|d| d.screens.iter().find(|s| s.display == 1));
-            if let Some(scr) = side_scr {
-                if scr.tabs.is_empty() {
-                    pith_ui::render_screen_diff(scr, &t, now, &mut side_cache, fb);
-                } else {
-                    // full repaint of the active tab page (simple button screen)
-                    pith_ui::render_tabbed(scr, side_tab, &t, now, fb);
+            if TOUCH_DIAG {
+                fb.render_touch_test(side_mark, side_fade, MARK_FADE);
+                if side_fade == 0 {
+                    side_mark = None;
                 }
             } else {
-                ui::render_buttons(fb, &buttons, page, &t, &toggle_on);
+                let side_scr = local_doc
+                    .as_ref()
+                    .and_then(|d| d.screens.iter().find(|s| s.display == 1));
+                if let Some(scr) = side_scr {
+                    if scr.tabs.is_empty() {
+                        pith_ui::render_screen_diff(scr, &t, now, &mut side_cache, fb);
+                    } else {
+                        // full repaint of the active tab page (simple button screen)
+                        pith_ui::render_tabbed(scr, side_tab, &t, now, fb);
+                    }
+                } else {
+                    ui::render_buttons(fb, &buttons, page, &t, &toggle_on);
+                }
             }
             if race_is_1 {
                 blit!(disp2, fb2);
@@ -433,6 +592,12 @@ fn display_task() {
         // --- render: race panel ---
         {
             let fb = if race_is_1 { &mut fb1 } else { &mut fb2 };
+            if TOUCH_DIAG {
+                fb.render_touch_test(race_mark, race_fade, MARK_FADE);
+                if race_fade == 0 {
+                    race_mark = None;
+                }
+            } else {
             match mode {
                 RaceMode::Config => {
                     let (b, sim, car) =
@@ -469,6 +634,7 @@ fn display_task() {
                     // discoverable tap-to-config affordance (drawn over the race UI)
                     ui::render_config_hint(fb);
                 }
+            }
             }
             if race_is_1 {
                 blit!(disp1, fb1);

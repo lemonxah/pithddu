@@ -257,6 +257,8 @@ pub struct State {
     pub sim: Vec<SimRow>,
     pub sim_uid: i32,
     pub sim_query: String,
+
+    pub device_log: Vec<String>, // firmware logs streamed over HID report id 3
 }
 
 impl Default for State {
@@ -334,6 +336,7 @@ impl Default for State {
             sim: Vec::new(),
             sim_uid: 0,
             sim_query: String::new(),
+            device_log: Vec::new(),
         }
     }
 }

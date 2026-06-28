@@ -20,7 +20,9 @@ use std::time::Duration;
 
 fn main() {
     esp_idf_svc::sys::link_patches();
-    esp_idf_svc::log::EspLogger::initialize_default();
+    // Route all `log::*` records to the UART console AND the GUI over HID report
+    // id 3 (this board has no usable USB serial console once TinyUSB owns the port).
+    usb::init_logger();
 
     let serial = device::serial();
     log::info!("pithddu boot — serial {serial}");
@@ -48,6 +50,7 @@ fn main() {
     let mut ticks: u32 = 0;
     loop {
         usb::poll_cdc(); // drain SimHub telemetry on CDC (HID is callback-driven)
+        usb::pump_log_tx(); // flush queued logs to the GUI during quiet periods
         ota::check_timeout();
 
         if ota::should_reboot() {

@@ -17,14 +17,14 @@ path = "src/main.rs"
 # framebuffer target for the in-app preview).
 pith-core = { path = "../pith-core" }
 pith-ui = { path = "../pith-ui", features = ["std"] }
+# Shared device transport (HID + serial + OTA) — also used by the pith-flash CLI.
+pith-device = { path = "../pith-device" }
 slint = { version = "1.17", default-features = false, features = ["backend-winit", "renderer-femtovg", "renderer-software", "accessibility", "compat-1-2", "std"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "fs"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-hidapi = "2"
-serialport = "4"
 flate2 = "1"
 tar = "0.4"
 

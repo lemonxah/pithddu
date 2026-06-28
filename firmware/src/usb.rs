@@ -44,6 +44,15 @@ static HID_TX: Mutex<HidTx> = Mutex::new(HidTx {
     pos: 0,
 });
 
+// Log channel (HID report id 3, device->host text). Same shape as HID_TX but
+// bounded: if the host isn't draining (no GUI attached) we drop the oldest bytes
+// instead of growing forever. Logs are lowest priority on the shared IN endpoint.
+const LOG_TX_CAP: usize = 16384;
+static LOG_TX: Mutex<HidTx> = Mutex::new(HidTx {
+    buf: Vec::new(),
+    pos: 0,
+});
+
 /// Latest parsed telemetry (written here, read by the LED/UI tasks later).
 pub static TELEM: Mutex<Telemetry> = Mutex::new(telem_zero());
 
@@ -106,10 +115,12 @@ pub extern "C" fn pith_on_hid_cmd(buf: *const u8, len: i32) {
     }
 }
 
-/// An HID IN report finished — pump the next queued reply chunk.
+/// An HID IN report finished — pump the next queued chunk. Command replies take
+/// priority; if none are pending the freed endpoint is used to drain logs.
 #[no_mangle]
 pub extern "C" fn pith_on_hid_tx_complete() {
     pump_hid_tx();
+    pump_log_tx();
 }
 
 // ---- line accumulation + dispatch ----
@@ -360,5 +371,84 @@ fn pump_hid_tx() {
     rep[1..1 + n].copy_from_slice(&tx.buf[tx.pos..tx.pos + n]);
     if unsafe { sys::pith_hid_send(2, rep.as_ptr() as *const core::ffi::c_void, (n + 1) as i32) } {
         tx.pos += n;
+    }
+}
+
+// ---- log channel (HID report id 3) ----
+
+/// Queue a log line for the GUI (HID report id 3). Non-blocking: appends to a
+/// bounded buffer and opportunistically pumps. Called from the global logger, so
+/// it must never call back into `log!` (would recurse).
+pub fn log_line(s: &str) {
+    {
+        let mut tx = LOG_TX.lock().unwrap();
+        // Compact consumed bytes so `buf` doesn't creep upward over time.
+        if tx.pos > 0 {
+            let consumed = tx.pos;
+            tx.buf.drain(..consumed);
+            tx.pos = 0;
+        }
+        tx.buf.extend_from_slice(s.as_bytes());
+        if !s.ends_with('\n') {
+            tx.buf.push(b'\n');
+        }
+        // Bounded: drop oldest whole-buffer overflow if the host isn't draining.
+        if tx.buf.len() > LOG_TX_CAP {
+            let overflow = tx.buf.len() - LOG_TX_CAP;
+            tx.buf.drain(..overflow);
+        }
+    }
+    pump_log_tx();
+}
+
+/// Drain queued log bytes onto the IN endpoint when it's free and no command
+/// reply is waiting. Safe to call from the main loop and the tx-complete hook.
+pub fn pump_log_tx() {
+    let mut tx = LOG_TX.lock().unwrap();
+    if tx.pos >= tx.buf.len() {
+        tx.buf.clear();
+        tx.pos = 0;
+        return;
+    }
+    // Don't fight command replies for the shared endpoint — let them go first.
+    if HID_TX.lock().map(|h| h.pos < h.buf.len()).unwrap_or(false) {
+        return;
+    }
+    if !unsafe { sys::pith_hid_ready() } {
+        return;
+    }
+    let remaining = tx.buf.len() - tx.pos;
+    let n = remaining.min(61);
+    let mut rep = [0u8; 62];
+    rep[0] = n as u8;
+    rep[1..1 + n].copy_from_slice(&tx.buf[tx.pos..tx.pos + n]);
+    if unsafe { sys::pith_hid_send(3, rep.as_ptr() as *const core::ffi::c_void, (n + 1) as i32) } {
+        tx.pos += n;
+    }
+}
+
+/// Global `log` sink: mirrors every record to the UART console (for anyone with a
+/// UART adapter) AND streams it to the GUI over HID report id 3 — the device has
+/// no usable USB serial console once TinyUSB owns the port, so this is how logs
+/// reach the dashboard.
+struct HidLogger;
+impl log::Log for HidLogger {
+    fn enabled(&self, _m: &log::Metadata) -> bool {
+        true
+    }
+    fn log(&self, record: &log::Record) {
+        let line = format!("{:<5} {}: {}", record.level(), record.target(), record.args());
+        println!("{line}"); // UART0 console
+        log_line(&line); // HID report id 3 -> GUI
+    }
+    fn flush(&self) {}
+}
+static HID_LOGGER: HidLogger = HidLogger;
+
+/// Install the HID/console logger as the global `log` sink. Replaces the default
+/// esp logger so all `log::*` records also reach the GUI.
+pub fn init_logger() {
+    if log::set_logger(&HID_LOGGER).is_ok() {
+        log::set_max_level(log::LevelFilter::Info);
     }
 }

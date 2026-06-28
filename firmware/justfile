@@ -13,10 +13,17 @@ build:
 release-build:
     cargo build --release
 
-# Flash + monitor over USB (espflash). PORT defaults to autodetect.
+# Full flash over USB (espflash): bootloader + TWO_OTA partition table + app.
+# Passing the BUILT partition table is REQUIRED — without it espflash writes its
+# default single-app table, which has no second OTA slot, so esp_ota_begin fails
+# ("OTAERR") and pith-flash / GUI OTA updates can't work. Drops --monitor (this
+# board's console is UART0, not USB; use the GUI device-log instead).
 flash port="":
     cargo build --release
-    espflash flash --monitor {{ if port != "" { "-p " + port } else { "" } }} \
+    espflash flash \
+        --bootloader target/xtensa-esp32s3-espidf/release/bootloader.bin \
+        --partition-table target/xtensa-esp32s3-espidf/release/partition-table.bin \
+        {{ if port != "" { "-p " + port } else { "" } }} \
         target/xtensa-esp32s3-espidf/release/pithddu
 
 # Serial monitor only.

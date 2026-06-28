@@ -8,7 +8,7 @@ pub mod simhub;
 pub mod telemetry;
 pub mod uidoc;
 
-use slint::{Color, ModelRc, SharedString, VecModel};
+use slint::{Color, ComponentHandle, ModelRc, SharedString, VecModel};
 
 pub fn col(rgb: u32) -> Color {
     Color::from_rgb_u8(
@@ -32,6 +32,15 @@ pub fn sstr(s: &str) -> SharedString {
 
 pub fn model<T: Clone + 'static>(v: Vec<T>) -> ModelRc<T> {
     ModelRc::new(VecModel::from(v))
+}
+
+/// Push the captured device-log lines (HID report id 3) into the DeviceLog global.
+pub fn push_device_log(ui: &crate::AppWindow, s: &crate::state::State) {
+    let dl = ui.global::<crate::DeviceLog>();
+    let lines: Vec<SharedString> = s.device_log.iter().map(|l| sstr(l)).collect();
+    dl.set_count(s.device_log.len() as i32);
+    dl.set_text(sstr(&s.device_log.join("\n")));
+    dl.set_lines(model(lines));
 }
 
 pub fn refresh_race(ui: &crate::AppWindow, s: &crate::state::State) {

@@ -15,6 +15,15 @@ impl Dash {
         self.log.push('\n');
     }
 
+    /// Device-side log lines streamed over HID report id 3 (empty on serial).
+    pub fn take_device_logs(&mut self) -> Vec<String> {
+        if self.use_hid {
+            self.hid.take_logs()
+        } else {
+            Vec::new()
+        }
+    }
+
     pub fn connected(&self) -> bool {
         if self.use_hid {
             self.hid.is_open()
@@ -124,8 +133,15 @@ impl Dash {
     pub fn ota_upload(&mut self, img: &[u8], mut on_progress: impl FnMut(i32)) -> bool {
         self.drain_t();
         self.tx_str(&format!("@OTA{}\n", img.len()));
-        if !self.rx_line(3000).contains("OTAREADY") {
-            self.logln("OTA: no OTAREADY (port busy?)");
+        // esp_ota_begin erases the target slot before replying OTAREADY — that's a
+        // few seconds for a ~750 KB image, more when the device is also servicing
+        // the GUI. Give it a generous window so the handshake doesn't false-fail.
+        let handshake = self.rx_line(12000);
+        if !handshake.contains("OTAREADY") {
+            self.logln(&format!(
+                "OTA: expected OTAREADY, got '{}'",
+                if handshake.is_empty() { "(no reply)" } else { &handshake }
+            ));
             return false;
         }
         const ACK: usize = 2048;

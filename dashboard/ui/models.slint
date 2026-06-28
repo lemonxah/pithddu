@@ -462,3 +462,12 @@ export global AppState {
     callback minimize();
     callback close();
 }
+
+// Device-side log stream (firmware logs over HID report id 3), shown in the GUI.
+export global DeviceLog {
+    in property <[string]> lines;
+    in property <string> text;      // all lines joined — for the selectable view + copy
+    in property <int> count;        // total lines received
+    callback clear();
+    callback copy();                // copy the whole log to the clipboard
+}

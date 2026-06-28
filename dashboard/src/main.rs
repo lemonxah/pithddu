@@ -5,7 +5,10 @@ mod callbacks;
 mod catalog;
 mod clipboard;
 mod ctx;
-mod device;
+// Device transport (HID + serial + OTA) moved to the shared `pith-device` crate
+// so the `pith-flash` CLI reuses the exact same code path. Alias it as `device`
+// so the existing `crate::device::…` references keep resolving unchanged.
+use pith_device as device;
 mod firmware;
 mod games;
 mod loops;

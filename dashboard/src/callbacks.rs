@@ -18,7 +18,8 @@ use crate::ui_bridge::simhub::{push_sim_fields, regen_simhub};
 use crate::ui_bridge::{refresh_race, sstr, to_u32};
 use crate::util::atoi;
 use crate::{
-    AppState, AppWindow, Buttons, CarLib, DeviceCfg, Firmware, RaceLayout, ShiftCfg, SimHub,
+    AppState, AppWindow, Buttons, CarLib, DeviceCfg, DeviceLog, Firmware, RaceLayout, ShiftCfg,
+    SimHub,
 };
 
 fn mark_dirty(u: &AppWindow, s: &State) {
@@ -163,6 +164,19 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
         let c = ctx.clone();
         app.on_sync_device(move || crate::loops::sync_from_device(&c));
         app.on_minimize(|| {});
+        let c = ctx.clone();
+        ui.global::<DeviceLog>().on_clear(move || {
+            if let Some(u) = c.ui.upgrade() {
+                let mut s = c.lock();
+                s.device_log.clear();
+                crate::ui_bridge::push_device_log(&u, &s);
+            }
+        });
+        let c = ctx.clone();
+        ui.global::<DeviceLog>().on_copy(move || {
+            let s = c.lock();
+            copy_to_clipboard(&s.device_log.join("\n"));
+        });
         let c = ctx.clone();
         app.on_close(move || {
             if c.tray_active.load(std::sync::atomic::Ordering::SeqCst) {

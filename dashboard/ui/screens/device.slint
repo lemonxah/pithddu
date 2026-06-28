@@ -1,9 +1,9 @@
 // Device configuration: connection info and the GPIO pin layout (pushed to the
 // device; applied on reboot). Firmware build/OTA lives on the Firmware tab.
 import { Theme } from "../theme.slint";
-import { AppState, Page, DeviceCaps, DeviceCfg, PinRow } from "../models.slint";
+import { AppState, Page, DeviceCaps, DeviceCfg, PinRow, DeviceLog } from "../models.slint";
 import { Card, PrimaryButton, GhostButton, SectionLabel, Dot, ToggleSwitch } from "../widgets.slint";
-import { LineEdit, Button, ComboBox, ScrollView } from "std-widgets.slint";
+import { LineEdit, Button, ComboBox, ScrollView, TextEdit } from "std-widgets.slint";
 
 // Pin picker with a scrollable popup that flips upward near the window bottom.
 component PinPicker inherits Rectangle {
@@ -243,6 +243,34 @@ export component DeviceConfigScreen inherits Rectangle {
                     PrimaryButton { text: "SAVE PINS (REBOOTS DEVICE)"; enabled: AppState.connected; clicked => { DeviceCfg.save-pins(); } }
                 }
                 Text { text: "Pin changes take effect after the device reboots. Wrong pins can blank the display — keep the defaults unless your wiring differs."; color: Theme.text3; font-size: 11px; wrap: word-wrap; }
+            }
+        }
+        // ===== device log (firmware logs over HID report id 3 — selectable + copyable) =====
+        Card {
+            VerticalLayout {
+                padding: 16px;
+                spacing: 8px;
+                HorizontalLayout {
+                    SectionLabel { text: "DEVICE LOG"; }
+                    Rectangle { }
+                    Text { text: DeviceLog.count + " lines"; color: Theme.text3; font-size: 11px; vertical-alignment: center; }
+                    Rectangle { width: 10px; }
+                    GhostButton { text: "COPY"; clicked => { DeviceLog.copy(); } }
+                    GhostButton { text: "CLEAR"; clicked => { DeviceLog.clear(); } }
+                }
+                // read-only TextEdit = selectable text + native Ctrl+C
+                TextEdit {
+                    height: 260px;
+                    read-only: true;
+                    font-size: 11px;
+                    text: DeviceLog.text;
+                }
+                Text {
+                    text: DeviceLog.count == 0
+                        ? (AppState.connected ? "Waiting for device logs…" : "Connect the device to see logs.")
+                        : "Select text above to copy, or use COPY for the whole log.";
+                    color: Theme.text3; font-size: 11px;
+                }
             }
         }
         }

@@ -19,7 +19,8 @@ extern void pith_on_hid_cmd(const uint8_t *buf, int len);
 extern void pith_on_hid_tx_complete(void);
 
 // ---- HID report descriptor (verbatim from the legacy firmware) ----
-// Report ID 1: 32-button joystick. Report ID 2: vendor IN/OUT (63-byte) channel.
+// Report ID 1: 32-button joystick. Report ID 2: vendor IN/OUT (63-byte) command
+// channel. Report ID 3: vendor IN (63-byte) device->host log/text stream.
 static const uint8_t s_hid_report[] = {
     // --- Joystick, Report ID 1 ---
     0x05, 0x01,        // Usage Page (Generic Desktop)
@@ -46,6 +47,17 @@ static const uint8_t s_hid_report[] = {
     0x95, 0x3F,        //   Report Count (63)
     0x09, 0x01, 0x81, 0x02,  //   Input  (Data,Var,Abs)  device -> host
     0x09, 0x01, 0x91, 0x02,  //   Output (Data,Var,Abs)  host -> device
+    0xC0,              // End Collection
+    // --- Log channel, Report ID 3 (device -> host text only) ---
+    0x06, 0x00, 0xFF,  // Usage Page (Vendor-defined 0xFF00)
+    0x09, 0x02,        // Usage (0x02)
+    0xA1, 0x01,        // Collection (Application)
+    0x85, 0x03,        //   Report ID (3)
+    0x15, 0x00,        //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,  //   Logical Maximum (255)
+    0x75, 0x08,        //   Report Size (8)
+    0x95, 0x3F,        //   Report Count (63)
+    0x09, 0x02, 0x81, 0x02,  //   Input (Data,Var,Abs)  device -> host
     0xC0               // End Collection
 };
 

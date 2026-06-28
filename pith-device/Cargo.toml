@@ -1,0 +1,9 @@
+[package]
+name = "pith-device"
+version = "0.1.0"
+edition = "2021"
+description = "Shared device transport (HID + serial) and OTA flashing for the Pith DDU."
+
+[dependencies]
+hidapi = "2"
+serialport = "4"

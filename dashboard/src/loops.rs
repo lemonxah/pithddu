@@ -34,7 +34,18 @@ pub fn dash_close(ctx: &Arc<Ctx>) {
 }
 
 pub fn device_loop(ctx: Arc<Ctx>) {
+    let mut fw_tick: u32 = 0;
     while ctx.running.load(Ordering::SeqCst) {
+        // Re-scan for a locally built firmware image every ~2s so a bin built from
+        // the terminal (just image) lights up the "FLASH LOCAL BUILD" button live.
+        if fw_tick % 12 == 0 {
+            let c2 = ctx.clone();
+            ctx.ui_run(move |u| {
+                let s = c2.lock();
+                crate::ui_bridge::firmware::refresh_firmware_local(&u, &s);
+            });
+        }
+        fw_tick = fw_tick.wrapping_add(1);
         if !ctx.dash().connected() {
             if try_connect(&ctx) {
                 let caps = ctx.dash().capabilities();
@@ -87,6 +98,20 @@ pub fn device_loop(ctx: Arc<Ctx>) {
                 if !tl.is_empty() {
                     apply_telemetry(&u, &mut s, &tl);
                 }
+            });
+        }
+        // Stream firmware logs (HID report id 3) into the GUI's device-log view.
+        let new_logs = ctx.dash().take_device_logs();
+        if !new_logs.is_empty() {
+            let c2 = ctx.clone();
+            ctx.ui_run(move |u| {
+                let mut s = c2.lock();
+                s.device_log.extend(new_logs.iter().cloned());
+                let len = s.device_log.len();
+                if len > 2000 {
+                    s.device_log.drain(..len - 2000);
+                }
+                crate::ui_bridge::push_device_log(&u, &s);
             });
         }
         std::thread::sleep(Duration::from_millis(160));

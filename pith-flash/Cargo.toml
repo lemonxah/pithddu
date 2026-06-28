@@ -1,0 +1,12 @@
+[package]
+name = "pith-flash"
+version = "0.1.0"
+edition = "2021"
+description = "CLI to OTA-flash a firmware .bin to the Pith DDU over its USB link (same @OTA mechanism the dashboard uses)."
+
+[[bin]]
+name = "pith-flash"
+path = "src/main.rs"
+
+[dependencies]
+pith-device = { path = "../pith-device" }

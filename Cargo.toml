@@ -7,7 +7,7 @@
 # depended by the firmware.
 [workspace]
 resolver = "2"
-members = ["dashboard", "pith-core", "pith-ui"]
+members = ["dashboard", "pith-core", "pith-ui", "pith-device", "pith-flash"]
 exclude = ["firmware"]
 
 [profile.release]

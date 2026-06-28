@@ -158,6 +158,29 @@ export component FirmwareScreen inherits Rectangle {
                                 }
                             }
                         }
+                        // ---- local build ready (a pithddu-*.bin exists on disk) ----
+                        // Only shown when a locally built image is present + the device
+                        // is connected, so it can be OTA-flashed over USB (no boot button).
+                        if Firmware.have-bin && root.connected && !root.busy
+                            && Firmware.state != FwState.success && Firmware.state != FwState.failure: VerticalLayout {
+                            spacing: 10px;
+                            Rectangle { height: 1px; background: Theme.line; }
+                            Text { text: "LOCAL BUILD READY"; color: Theme.amber; font-family: Theme.display-font; font-size: 13px; letter-spacing: 1.5px; }
+                            Mono {
+                                text: "A locally built firmware image was found — flash it to the connected device over USB (OTA, no boot button).";
+                                color: Theme.text3; font-size: 12px; wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                PrimaryButton {
+                                    text: "FLASH LOCAL BUILD";
+                                    enabled: !Firmware.building;
+                                    clicked => { Firmware.flash-built(); }
+                                }
+                                Rectangle { }
+                            }
+                            if Firmware.bin-path != "": Mono { text: Firmware.bin-path; color: Theme.text3; font-size: 10px; }
+                        }
                     }
                 }
                 // published firmware versions (GitHub releases) — pick one to flash
