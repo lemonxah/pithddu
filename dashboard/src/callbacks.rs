@@ -211,6 +211,11 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
                 s.acc_port = (port.clamp(1, 65535)) as u16;
                 s.acc_password = pw.to_string();
                 save_udp_cfg(&s);
+                drop(s);
+                // Reflect the new toggle state back to the (pure-input) switch.
+                if let Some(u) = c.ui.upgrade() {
+                    u.global::<TelemetryUdp>().set_acc_on(on);
+                }
             });
         let c = ctx.clone();
         ui.global::<TelemetryUdp>().on_set_ac(move |on, host, port| {
@@ -219,6 +224,10 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
             s.ac_host = host.to_string();
             s.ac_port = (port.clamp(1, 65535)) as u16;
             save_udp_cfg(&s);
+            drop(s);
+            if let Some(u) = c.ui.upgrade() {
+                u.global::<TelemetryUdp>().set_ac_on(on);
+            }
         });
         let c = ctx.clone();
         ui.global::<TelemetryUdp>().on_set_gt7(move |on, host| {
@@ -226,12 +235,20 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
             s.gt7_enabled = on;
             s.gt7_host = host.to_string();
             save_udp_cfg(&s);
+            drop(s);
+            if let Some(u) = c.ui.upgrade() {
+                u.global::<TelemetryUdp>().set_gt7_on(on);
+            }
         });
         let c = ctx.clone();
         ui.global::<TelemetryUdp>().on_set_shm(move |on| {
             let mut s = c.lock();
             s.shm_enabled = on;
             save_udp_cfg(&s);
+            drop(s);
+            if let Some(u) = c.ui.upgrade() {
+                u.global::<TelemetryUdp>().set_shm_on(on);
+            }
         });
     }
 

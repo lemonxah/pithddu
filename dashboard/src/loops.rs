@@ -42,24 +42,65 @@ pub fn dash_close(ctx: &Arc<Ctx>) {
 pub(crate) fn push_sim_frame(
     ctx: &Arc<Ctx>,
     line: &str,
+    source: &str,
     last_push: &mut Instant,
     last_preview: &mut Instant,
 ) {
     if ctx.ota_active.load(Ordering::SeqCst) {
         return;
     }
+    let Some(incoming) = pith_core::simhub::parse_line(line) else {
+        return;
+    };
     let now = Instant::now();
-    // Augment the frame with dashboard-computed fields the source didn't provide
-    // (fuel/lap, laps-left, delta). Lap-to-lap tracking lives in State.
-    let augmented = {
+    // Merge every live source (augment, not replace), then augment with computed
+    // fields (best/cur lap, fuel/lap, delta). Lap-to-lap tracking lives in State.
+    let merged_frame = {
         let mut s = ctx.lock();
         s.last_sim_frame = Some(now);
-        pith_core::simhub::parse_line(line).map(|mut t| {
-            s.derived.update(&mut t);
-            frame_from_telem(&t)
-        })
+        // Cache this source's latest frame (+ which computed fields it supplies,
+        // sticky); expire sources silent for >2 s.
+        s.src_frames
+            .retain(|(lbl, _, at, _)| lbl == source || now.duration_since(*at) < Duration::from_secs(2));
+        match s.src_frames.iter_mut().find(|(lbl, _, _, _)| lbl == source) {
+            Some(e) => {
+                e.1 = incoming;
+                e.2 = now;
+                e.3.observe(&incoming);
+            }
+            None => {
+                let mut p = crate::telemetry::derive::Provided::default();
+                p.observe(&incoming);
+                s.src_frames.push((source.to_string(), incoming, now, p));
+            }
+        }
+        // Rebuild from defaults and overlay each live source's NON-default fields.
+        // Order by a STABLE priority (authoritative source applied last → wins), NOT
+        // recency — otherwise two feeds taking turns being "newest" make the winner
+        // of a shared field (e.g. gear) alternate every frame and flicker. A source
+        // still never zeroes a field another provides (only non-default overlays).
+        let mut order: Vec<usize> = (0..s.src_frames.len()).collect();
+        order.sort_by_key(|&i| (source_priority(&s.src_frames[i].0), i));
+        let mut merged = pith_core::simhub::Telemetry::default();
+        let mut provided = crate::telemetry::derive::Provided::default();
+        for &i in &order {
+            let src = s.src_frames[i].1;
+            provided = provided.merge(s.src_frames[i].3);
+            if src.gear != 0 {
+                merged.gear = src.gear;
+            }
+            for id in 1..pith_core::registry::FIELD_COUNT {
+                let v = pith_core::registry::field_value(&src, id);
+                if v != 0 {
+                    pith_core::registry::set_field(&mut merged, id, v);
+                }
+            }
+        }
+        // Compute fields only when NO live source supplies them.
+        s.derived.update(&mut merged, provided);
+        frame_from_telem(&merged)
     };
-    let line: &str = augmented.as_deref().unwrap_or(line);
+    let line: &str = &merged_frame;
     // Push to the device (~30 Hz — smooth on the LCD, half the HID traffic of 60,
     // and no @T round-trip back from the device).
     if now.duration_since(*last_push) >= Duration::from_millis(33) {
@@ -89,6 +130,7 @@ pub(crate) fn push_sim_frame(
 fn handle_text_frame(
     ctx: &Arc<Ctx>,
     line: &str,
+    source: &str,
     last_push: &mut Instant,
     last_preview: &mut Instant,
 ) {
@@ -103,7 +145,7 @@ fn handle_text_frame(
     } else if let Some(track) = line.strip_prefix("@MAP") {
         apply_track(ctx, track.trim());
     } else if line.starts_with('$') {
-        push_sim_frame(ctx, line, last_push, last_preview);
+        push_sim_frame(ctx, line, source, last_push, last_preview);
     }
 }
 
@@ -142,31 +184,78 @@ fn apply_car_model(ctx: &Arc<Ctx>, model: &str) {
     });
 }
 
-/// Apply a track name from any source: forget the old learned outline and relearn.
+/// Apply a detected track name from any source. Self-learned maps were removed —
+/// the detected track now just selects the Map widget's outline. TODO (maps are on
+/// the back burner): replace `trackmap::outline_for` with an SVG database keyed by
+/// track name and push the chosen outline to the device on detection.
 fn apply_track(ctx: &Arc<Ctx>, track: &str) {
     if track.is_empty() {
         return;
     }
     let mut s = ctx.lock();
-    if s.map_learner.track != track {
-        s.map_learner.reset(track);
-        s.learned_map.clear();
-        s.map_pushed = false;
-        s.map_push_pending = false;
+    if s.map_track != track {
+        s.map_track = track.to_string();
     }
 }
 
+/// Merge priority for a source label — higher wins when two live sources fill the
+/// same field, so the winner is stable (no per-frame flicker). Shared memory is the
+/// most complete/accurate, then the active game connectors, then SimHub, then the
+/// passive UDP decoders. Ties fall back to first-seen order.
+fn source_priority(label: &str) -> u8 {
+    let l = label.to_ascii_lowercase();
+    if l.contains("shim") || l.contains("shm") || matches!(label, "rF2/LMU" | "AC/ACC" | "AC EVO" | "RaceRoom") {
+        4
+    } else if matches!(label, "ACC" | "Assetto Corsa" | "Gran Turismo 7") {
+        3
+    } else if l.contains("simhub") {
+        2
+    } else {
+        1
+    }
+}
+
+/// Every source that has fed a frame in the last 2 s (sorted, deduped) — so the
+/// page can show all live feeds at once instead of flipping between them when
+/// several stream together (e.g. shim + SimHub).
+fn live_sources(ctx: &Arc<Ctx>) -> Vec<String> {
+    let now = Instant::now();
+    let s = ctx.lock();
+    let mut labels: Vec<String> = s
+        .src_frames
+        .iter()
+        .filter(|(_, _, at, _)| now.duration_since(*at) < Duration::from_secs(2))
+        .map(|(l, _, _, _)| l.clone())
+        .collect();
+    drop(s);
+    labels.sort();
+    labels.dedup();
+    labels
+}
+
+/// Push the live-source list (a model the page renders one-per-line) + a joined
+/// string (kept for the per-decoder "receiving" highlight).
+fn push_source_label(ctx: &Arc<Ctx>) {
+    let list = live_sources(ctx);
+    let joined = list.join("  +  ");
+    ctx.ui_run(move |u| {
+        let g = u.global::<TelemetryUdp>();
+        g.set_last_source(sstr(&joined));
+        let items: Vec<slint::SharedString> = list.iter().map(|l| sstr(l)).collect();
+        g.set_sources(model(items));
+    });
+}
+
 /// Reflect the running UDP server's status into the Telemetry-UDP page.
-fn push_udp_status(ctx: &Arc<Ctx>, bound: Option<u16>, packets: u64, pps: i32, source: &str) {
-    let source = source.to_string();
+fn push_udp_status(ctx: &Arc<Ctx>, bound: Option<u16>, packets: u64, pps: i32, _source: &str) {
     ctx.ui_run(move |u| {
         let g = u.global::<TelemetryUdp>();
         g.set_listening(bound.is_some());
         g.set_bound_port(bound.map(|p| p as i32).unwrap_or(0));
         g.set_packets(packets as i32);
         g.set_pps(pps);
-        g.set_last_source(sstr(&source));
     });
+    push_source_label(ctx);
 }
 
 /// UDP telemetry receiver. Binds `0.0.0.0:<port>` and accepts two kinds of
@@ -238,7 +327,13 @@ pub fn udp_listener_loop(ctx: Arc<Ctx>) {
                             if l.starts_with('$') {
                                 had_frame = true;
                             }
-                            handle_text_frame(&ctx, line, &mut last_push, &mut last_preview);
+                            // Label this frame's source (fresh @SRC tag, else the
+                            // SimHub plugin) so multi-source merge can tell feeds apart.
+                            let cur_src = match &text_src {
+                                Some((s, t)) if t.elapsed() < Duration::from_secs(3) => s.as_str(),
+                                _ => "SimHub plugin",
+                            };
+                            handle_text_frame(&ctx, line, cur_src, &mut last_push, &mut last_preview);
                         }
                     }
                     if had_frame {
@@ -252,7 +347,7 @@ pub fn udp_listener_loop(ctx: Arc<Ctx>) {
                 }
             } else if let Some((name, dec)) = try_decode(data) {
                 let frame = frame_from_telem(&dec.telem);
-                push_sim_frame(&ctx, &frame, &mut last_push, &mut last_preview);
+                push_sim_frame(&ctx, &frame, name, &mut last_push, &mut last_preview);
                 packets += 1;
                 source = name.to_string();
                 // Surface the source game + (numeric) car identity ~1 Hz.
@@ -365,23 +460,6 @@ pub fn device_loop(ctx: Arc<Ctx>) {
                         apply_telemetry(&u, &mut s, &tl);
                     }
                 });
-            }
-        }
-        // Push a freshly self-learned track map (this background thread can block
-        // on the reply). Skipped while the user has unsaved edits so an auto-push
-        // never clobbers in-progress layout work — it then rides out on Save.
-        if ctx.dash().connected() {
-            let json = {
-                let mut s = ctx.lock();
-                if s.map_push_pending && !s.race_dirty {
-                    s.map_push_pending = false;
-                    Some(crate::ui_bridge::uidoc::build_uidoc_json(&s))
-                } else {
-                    None
-                }
-            };
-            if let Some(json) = json {
-                ctx.dash().push_ui(&json);
             }
         }
         // Stream firmware logs (HID report id 3) into the GUI's device-log view.
@@ -582,8 +660,9 @@ pub fn read_race_from_device(ctx: &Arc<Ctx>) {
 use crate::telemetry::acc;
 
 /// Set the Telemetry-UDP page's "source" label (throttled by the caller).
-fn set_udp_source(ctx: &Arc<Ctx>, src: &'static str) {
-    ctx.ui_run(move |u| u.global::<TelemetryUdp>().set_last_source(sstr(src)));
+fn set_udp_source(ctx: &Arc<Ctx>, _src: &str) {
+    // Show all live sources together rather than just this loop's label.
+    push_source_label(ctx);
 }
 
 /// The sim-id of the currently process-detected game (from `game_loop`), or "".
@@ -673,19 +752,26 @@ pub fn acc_connector_loop(ctx: Arc<Ctx>) {
             if !ctx.running.load(Ordering::SeqCst) {
                 return;
             }
-            // Config changed / disabled → unregister and restart from the top.
+            // Config changed / disabled / game closed → unregister and restart from
+            // the top (which shows "Off" or "Waiting for ACC" rather than a stale
+            // "Connected").
             {
                 let s = ctx.lock();
-                if !s.acc_enabled
+                let cfg_changed = !s.acc_enabled
                     || s.acc_host != host
                     || s.acc_port != port
-                    || s.acc_password != password
-                {
+                    || s.acc_password != password;
+                drop(s);
+                if cfg_changed || detected_sim(&ctx) != "assettocorsacompetizione" {
                     if let Some(id) = conn_id {
                         let _ = sock.send_to(&acc::encode_request(acc::UNREGISTER, id), (host.as_str(), port));
                     }
                     continue 'outer;
                 }
+            }
+            // Broadcasting stream went silent → stop showing a stale "Connected".
+            if conn_id.is_some() && last_rx.elapsed() > Duration::from_secs(3) {
+                set_acc_status(&ctx, "Reconnecting…");
             }
             if let Ok((n, _)) = sock.recv_from(&mut buf) {
                 last_rx = Instant::now();
@@ -708,7 +794,7 @@ pub fn acc_connector_loop(ctx: Arc<Ctx>) {
                         acc::AccMsg::Car(u) => {
                             if focused < 0 || u.car_index == focused {
                                 let frame = acc_frame(&u);
-                                push_sim_frame(&ctx, &frame, &mut last_push, &mut last_preview);
+                                push_sim_frame(&ctx, &frame, "ACC", &mut last_push, &mut last_preview);
                                 if last_src.elapsed() >= Duration::from_secs(1) {
                                     last_src = Instant::now();
                                     set_udp_source(&ctx, "ACC");
@@ -781,10 +867,15 @@ pub fn ac_connector_loop(ctx: Arc<Ctx>) {
             }
             {
                 let s = ctx.lock();
-                if !s.ac_enabled || s.ac_host != host || s.ac_port != port {
+                let cfg_changed = !s.ac_enabled || s.ac_host != host || s.ac_port != port;
+                drop(s);
+                if cfg_changed || detected_sim(&ctx) != "assettocorsa" {
                     let _ = sock.send_to(&ac::encode_op(ac::OP_DISMISS), (host.as_str(), port));
                     continue 'outer;
                 }
+            }
+            if subscribed && last_rx.elapsed() > Duration::from_secs(3) {
+                set_ac_status(&ctx, "Reconnecting…");
             }
             if let Ok((n, _)) = sock.recv_from(&mut buf) {
                 last_rx = Instant::now();
@@ -800,7 +891,7 @@ pub fn ac_connector_loop(ctx: Arc<Ctx>) {
                     }
                 } else if let Some(t) = ac::parse_rtcarinfo(data) {
                     let frame = frame_from_telem(&t);
-                    push_sim_frame(&ctx, &frame, &mut last_push, &mut last_preview);
+                    push_sim_frame(&ctx, &frame, "Assetto Corsa", &mut last_push, &mut last_preview);
                     if last_src.elapsed() >= Duration::from_secs(1) {
                         last_src = Instant::now();
                         set_udp_source(&ctx, "Assetto Corsa");
@@ -877,7 +968,7 @@ pub fn gt7_connector_loop(ctx: Arc<Ctx>) {
                 if let Some(pt) = gt7::decrypt(&buf[..n]) {
                     if let Some(t) = gt7::parse(&pt) {
                         let frame = frame_from_telem(&t);
-                        push_sim_frame(&ctx, &frame, &mut last_push, &mut last_preview);
+                        push_sim_frame(&ctx, &frame, "Gran Turismo 7", &mut last_push, &mut last_preview);
                         set_gt7_status(&ctx, "Connected");
                         if last_src.elapsed() >= Duration::from_secs(1) {
                             last_src = Instant::now();
@@ -923,7 +1014,7 @@ pub fn shm_reader_loop(ctx: Arc<Ctx>) {
         match shm::read_once() {
             Some(r) => {
                 let frame = frame_from_telem(&r.telem);
-                push_sim_frame(&ctx, &frame, &mut last_push, &mut last_preview);
+                push_sim_frame(&ctx, &frame, r.label, &mut last_push, &mut last_preview);
                 if last_src.elapsed() >= Duration::from_secs(1) {
                     last_src = Instant::now();
                     set_shm_status(&ctx, "Reading");

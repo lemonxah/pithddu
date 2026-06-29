@@ -16,6 +16,37 @@ fn now_ms() -> u64 {
     EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
 
+/// Which computed fields a telemetry source actually supplies. Sticky per source
+/// (set once a source sends a real value, so a momentary 0 — delta on-pace,
+/// current-lap at the line — doesn't make us think the source dropped it). When a
+/// field is supplied by ANY live source we must NOT compute our own, even if this
+/// frame's merged value is 0: our tracker's state is stale and would emit garbage.
+#[derive(Default, Clone, Copy)]
+pub struct Provided {
+    pub cur_lap: bool,
+    pub best_lap: bool,
+    pub delta: bool,
+    pub fuel_per_lap: bool,
+}
+
+impl Provided {
+    /// Mark every field this frame carries a real (non-zero) value for. Sticky.
+    pub fn observe(&mut self, t: &Telemetry) {
+        self.cur_lap |= t.cur_lap_ms != 0;
+        self.best_lap |= t.best_lap_ms != 0;
+        self.delta |= t.delta_ms != 0;
+        self.fuel_per_lap |= t.fuel_per_lap_ml != 0;
+    }
+    pub fn merge(self, o: Provided) -> Provided {
+        Provided {
+            cur_lap: self.cur_lap || o.cur_lap,
+            best_lap: self.best_lap || o.best_lap,
+            delta: self.delta || o.delta,
+            fuel_per_lap: self.fuel_per_lap || o.fuel_per_lap,
+        }
+    }
+}
+
 /// All derived-field trackers, run in order each frame.
 pub struct Derived {
     best: BestLap,
@@ -31,11 +62,19 @@ impl Default for Derived {
 }
 
 impl Derived {
-    pub fn update(&mut self, t: &mut Telemetry) {
-        self.best.update(t); // best needs last_lap; run before delta
-        self.cur.update(t); // current-lap time before delta (delta uses it)
-        self.fuel.update(t);
-        self.delta.update(t);
+    /// Fill computed fields. `provided` says which fields a live source already
+    /// supplies — those are left untouched (compute only when NO source has them).
+    pub fn update(&mut self, t: &mut Telemetry, provided: Provided) {
+        if !provided.best_lap {
+            self.best.update(t); // best needs last_lap; run before delta
+        }
+        if !provided.cur_lap {
+            self.cur.update(t); // current-lap time before delta (delta uses it)
+        }
+        self.fuel.update(t, provided.fuel_per_lap);
+        if !provided.delta {
+            self.delta.update(t);
+        }
     }
 }
 
@@ -97,9 +136,15 @@ struct Fuel {
 }
 
 impl Fuel {
-    fn update(&mut self, t: &mut Telemetry) {
+    fn update(&mut self, t: &mut Telemetry, provided: bool) {
         if t.fuel_per_lap_ml > 0 {
             self.per_lap_ml = t.fuel_per_lap_ml; // source provides it — adopt
+        } else if provided {
+            // A source supplies fuel/lap but it's momentarily 0 — restore the last
+            // value rather than recomputing from burn.
+            if self.per_lap_ml > 0 {
+                t.fuel_per_lap_ml = self.per_lap_ml;
+            }
         } else {
             if !self.started || t.laps_done < self.last_lap {
                 self.started = true;
@@ -121,58 +166,98 @@ impl Fuel {
                 t.fuel_per_lap_ml = self.per_lap_ml;
             }
         }
+        // laps-left only when the source didn't send it.
         if t.fuel_laps_x10 == 0 && self.per_lap_ml > 0 && t.fuel_dl > 0 {
             t.fuel_laps_x10 = t.fuel_dl * 1000 / self.per_lap_ml;
         }
     }
 }
 
-const NB: usize = 100; // track-position buckets
+const NB: usize = 1000; // track-position buckets — 0.1% each, matching track_pct
 
-/// Delta = current-lap pace vs the best lap, sampled by track position (0.1 ms
-/// units; negative = ahead). Approximate (bucketed) — matches how HUDs build it.
+/// Predictive lap delta — the same algorithm a sim HUD uses: store the reference
+/// lap as a table of elapsed-time-at-distance, then each frame take the current
+/// distance and show `current_elapsed − reference_at(distance)`. We can't read
+/// LMU's HUD delta or its reference lap (neither is in shared memory), so we
+/// rebuild it from the best lap we observe, at 0.1% resolution with gap-filling so
+/// it stays smooth. 0.1 ms units; negative = ahead of the reference.
 struct Delta {
     started: bool,
     have_ref: bool,
     last_lap: i32,
     best_lap_ms: i32,
-    best_ref: [i32; NB],
-    cur: [i32; NB],
+    last_b: i32,           // last track bucket filled this lap (−1 = none yet)
+    ref_t: [i32; NB + 1],  // reference lap: elapsed ms at each bucket (−1 = unset)
+    cur_t: [i32; NB + 1],  // current lap, filled as we go
 }
 
 impl Default for Delta {
     fn default() -> Self {
-        Self { started: false, have_ref: false, last_lap: 0, best_lap_ms: 0, best_ref: [0; NB], cur: [0; NB] }
+        Self {
+            started: false,
+            have_ref: false,
+            last_lap: 0,
+            best_lap_ms: 0,
+            last_b: -1,
+            ref_t: [-1; NB + 1],
+            cur_t: [-1; NB + 1],
+        }
     }
 }
 
 impl Delta {
+    fn new_lap(&mut self) {
+        self.cur_t = [-1; NB + 1];
+        self.last_b = -1;
+    }
+
     fn update(&mut self, t: &mut Telemetry) {
         if t.delta_ms != 0 {
-            return; // source provides a real delta
+            return; // source already provides a delta — don't override it
         }
-        let bucket = ((t.track_pct.clamp(0, 1000) as usize) * NB / 1001).min(NB - 1);
         let cur_ms = t.cur_lap_ms;
+        let b = t.track_pct.clamp(0, 1000); // 0..=1000 == bucket index
+
         if !self.started || t.laps_done < self.last_lap {
             self.started = true;
             self.last_lap = t.laps_done;
-            self.cur = [0; NB];
+            self.new_lap();
         } else if t.laps_done > self.last_lap {
+            // Adopt the just-completed lap as the reference if it's a new best.
             if t.last_lap_ms > 0 && (!self.have_ref || t.last_lap_ms < self.best_lap_ms) {
-                self.best_ref = self.cur;
+                self.ref_t = self.cur_t;
                 self.best_lap_ms = t.last_lap_ms;
                 self.have_ref = true;
             }
             self.last_lap = t.laps_done;
-            self.cur = [0; NB];
+            self.new_lap();
         }
-        if cur_ms > 0 {
-            self.cur[bucket] = cur_ms;
-            if self.have_ref {
-                let r = self.best_ref[bucket];
-                if r > 0 {
-                    t.delta_ms = (cur_ms - r) * 10; // ms → 0.1 ms units
-                }
+        if cur_ms <= 0 {
+            return;
+        }
+
+        // Record the current lap densely: fill any buckets skipped since the last
+        // frame by linear interpolation, so the reference table has no holes.
+        let bi = b as usize;
+        if self.last_b < 0 || b <= self.last_b {
+            self.cur_t[bi] = cur_ms;
+        } else {
+            let prev = self.cur_t[self.last_b as usize].max(0);
+            let span = b - self.last_b;
+            for k in 1..=span {
+                self.cur_t[(self.last_b + k) as usize] = prev + (cur_ms - prev) * k / span;
+            }
+        }
+        if b > self.last_b {
+            self.last_b = b;
+        }
+
+        // delta = our elapsed time − the reference lap's elapsed time at this exact
+        // track position.
+        if self.have_ref {
+            let r = self.ref_t[bi];
+            if r >= 0 {
+                t.delta_ms = (cur_ms - r) * 10; // ms → 0.1 ms units
             }
         }
     }
@@ -190,7 +275,7 @@ mod tests {
             let mut t = Telemetry::idle();
             t.laps_done = lap;
             t.last_lap_ms = last;
-            d.update(&mut t);
+            d.update(&mut t, Provided::default());
             t.best_lap_ms
         };
         assert_eq!(frame(&mut d, 2, 84_000), 84_000);
@@ -199,15 +284,39 @@ mod tests {
     }
 
     #[test]
+    fn delta_vs_reference_lap() {
+        let mut d = Delta::default();
+        let feed = |d: &mut Delta, lap, tp, cur, last| {
+            let mut t = Telemetry::idle();
+            t.laps_done = lap;
+            t.track_pct = tp;
+            t.cur_lap_ms = cur;
+            t.last_lap_ms = last;
+            d.update(&mut t);
+            t.delta_ms
+        };
+        // Lap 1 reference: 80 ms per 0.1% of track → an 80 s lap.
+        for tp in [250, 500, 750, 1000] {
+            feed(&mut d, 1, tp, tp * 80, 0);
+        }
+        // Cross the line: adopt lap 1 (80 s) as the reference.
+        feed(&mut d, 2, 0, 0, 80_000);
+        // Lap 2 at 50%: 200 ms slower than the reference → +2000 (0.1 ms units).
+        assert_eq!(feed(&mut d, 2, 500, 500 * 80 + 200, 80_000), 2000);
+        // Lap 2 at 75%: 150 ms faster → −1500.
+        assert_eq!(feed(&mut d, 2, 750, 750 * 80 - 150, 80_000), -1500);
+    }
+
+    #[test]
     fn fuel_per_lap_from_burn() {
         let mut d = Derived::default();
         let mut t = Telemetry::idle();
         t.laps_done = 1;
         t.fuel_dl = 500;
-        d.update(&mut t);
+        d.update(&mut t, Provided::default());
         t.laps_done = 2;
         t.fuel_dl = 476; // burned 2.4 L
-        d.update(&mut t);
+        d.update(&mut t, Provided::default());
         assert_eq!(t.fuel_per_lap_ml, 2400);
         assert_eq!(t.fuel_laps_x10, 476 * 1000 / 2400);
     }

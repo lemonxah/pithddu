@@ -13,17 +13,28 @@ component ConnRow inherits HorizontalLayout {
     in property <bool> connected;
     callback toggled(bool);
     spacing: 10px;
+    height: 34px;
+    // toggle
     VerticalLayout { alignment: center; ToggleSwitch { on: root.on; toggled(v) => { root.toggled(v); } } }
+    // name (fixed column so every row's status lines up)
     VerticalLayout {
         alignment: center;
-        min-width: 200px;
-        Text { text: root.name; color: Theme.text; font-family: Theme.mono-font; font-size: 13px; }
+        width: 200px;
+        Text { text: root.name; color: Theme.text; font-family: Theme.mono-font; font-size: 13px; overflow: elide; }
     }
-    VerticalLayout { alignment: center; Dot { tint: root.connected ? Theme.green : (root.on ? Theme.amber : Theme.text3); } }
-    VerticalLayout {
-        alignment: center;
-        Text { text: root.status; color: root.connected ? Theme.green : Theme.text3; font-size: 11px; }
+    // status: fixed-width column = dot + label, so the pips align across rows
+    HorizontalLayout {
+        width: 180px;
+        spacing: 7px;
+        alignment: start;
+        VerticalLayout { alignment: center; Dot { tint: root.connected ? Theme.green : (root.on ? Theme.amber : Theme.text3); } }
+        VerticalLayout {
+            alignment: center;
+            Text { text: root.status; color: root.connected ? Theme.green : (root.on ? Theme.amber : Theme.text3); font-size: 11px; overflow: elide; }
+        }
     }
+    // spacer pushes the inline config fields to the right edge
+    Rectangle { horizontal-stretch: 1; }
     @children
 }
 
@@ -95,12 +106,26 @@ export component UdpScreen inherits Rectangle {
                     // counters
                     HorizontalLayout {
                         spacing: 28px;
+                        alignment: start;
+                        // SOURCE(S) — list every live feed, one per line
+                        VerticalLayout {
+                            spacing: 5px;
+                            Text { text: TelemetryUdp.sources.length > 1 ? "SOURCES" : "SOURCE"; color: Theme.text3; font-family: Theme.display-font; font-size: 10.5px; letter-spacing: 1.2px; }
+                            if TelemetryUdp.sources.length == 0: Text {
+                                text: "—"; color: Theme.text; font-family: Theme.mono-font; font-size: 14px;
+                            }
+                            for src in TelemetryUdp.sources: HorizontalLayout {
+                                spacing: 7px;
+                                VerticalLayout { alignment: center; Dot { tint: Theme.green; } }
+                                Text { text: src; color: Theme.text; font-family: Theme.mono-font; font-size: 14px; vertical-alignment: center; }
+                            }
+                        }
                         for f in [
-                            { k: "SOURCE", v: TelemetryUdp.last-source != "" ? TelemetryUdp.last-source : "—" },
                             { k: "PACKETS/S", v: TelemetryUdp.pps + "" },
                             { k: "TOTAL", v: TelemetryUdp.packets + "" },
                         ]: VerticalLayout {
                             spacing: 5px;
+                            alignment: start;
                             Text { text: f.k; color: Theme.text3; font-family: Theme.display-font; font-size: 10.5px; letter-spacing: 1.2px; }
                             Text { text: f.v; color: Theme.text; font-family: Theme.mono-font; font-size: 14px; }
                         }

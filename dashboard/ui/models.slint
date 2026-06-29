@@ -51,7 +51,8 @@ export global TelemetryUdp {
     in property <int> bound-port: 0;            // port the socket is actually bound to
     in property <int> packets: 0;               // total datagrams accepted
     in property <int> pps: 0;                   // datagrams/second (live)
-    in property <string> last-source: "";       // "Forza Horizon 6" / "SimHub plugin"
+    in property <string> last-source: "";       // joined live sources (for highlights)
+    in property <[string]> sources: [];         // every live feed, one per line
     in property <string> local-ip: "";          // this PC's LAN IP (point the game here)
     in property <[string]> supported: [];       // directly-decoded games
 

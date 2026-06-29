@@ -66,6 +66,20 @@ pub fn apply_acc_graphics(t: &mut Telemetry, g: &[u8]) {
     }
     t.laps_done = le::i32(g, 132).max(0); // completedLaps
     t.position = le::i32(g, 136).max(0);
+    // Lap times (ms) straight from the graphics page — game data, so the current
+    // lap resets at the line (no wall-clock fallback). ACC parks "no time" at a
+    // huge sentinel, so reject anything past 30 min.
+    let lap = |o: usize| {
+        let v = le::i32(g, o);
+        if (0..30 * 60 * 1000).contains(&v) {
+            v
+        } else {
+            0
+        }
+    };
+    t.cur_lap_ms = lap(140); // iCurrentTime
+    t.last_lap_ms = lap(144); // iLastTime
+    t.best_lap_ms = lap(148); // iBestTime
     t.track_pct = (le::f32(g, 248) * 1000.0).clamp(0.0, 1000.0) as i32; // normalizedCarPos
     t.tc = le::i32(g, 1268); // TC level
     t.abs = le::i32(g, 1280); // ABS level

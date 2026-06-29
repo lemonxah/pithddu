@@ -167,12 +167,8 @@ fn alloc_box(el: El) -> Box<El> {
 /// Build a pith-ui `Screen` from the freeform nodes assigned to `display`.
 pub fn build_screen(s: &State, display: u8) -> Screen {
     let rev = s.led_rev.clamp(0, 48) as u8;
-    // Prefer the self-learned outline (real circuits) over the bundled placeholder.
-    let map = if !s.learned_map.is_empty() {
-        s.learned_map.clone()
-    } else {
-        crate::trackmap::outline_for(&s.map_track)
-    };
+    // Bundled outline for the (manual or auto-detected) track; empty = placeholder.
+    let map = crate::trackmap::outline_for(&s.map_track);
     let nodes: Vec<Node> = s
         .nodes
         .iter()

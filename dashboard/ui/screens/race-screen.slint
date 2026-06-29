@@ -541,10 +541,11 @@ export component RaceScreen inherits Rectangle {
                 }
             }
         }
-        // split body — definite height so the whole page (incl. the editor card
-        // below) has a known size and can scroll on short/scaled displays.
+        // split body — at least 360px for the preview, but grows to fit the right
+        // sidebar when its cards are taller (so the bottom card can't overflow into
+        // the editor panel below). The whole page scrolls in the outer Flickable.
         HorizontalLayout {
-            height: 360px;
+            min-height: 360px;
             spacing: 18px;
             // live preview stage
             Rectangle {
