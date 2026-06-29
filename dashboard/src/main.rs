@@ -15,6 +15,7 @@ mod loops;
 mod net;
 mod paths;
 mod persist;
+mod screenshot;
 mod state;
 mod telemetry;
 mod trackmap;
@@ -35,6 +36,16 @@ fn main() {
     let _ = slint::set_xdg_app_id("pith-dashboard");
 
     let ui = AppWindow::new().expect("create window");
+
+    // Screenshot mode: `pith-dashboard --shots [dir]` renders each page to a PNG
+    // (for the README/docs) and exits.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(p) = args.iter().position(|a| a == "--shots") {
+        let dir = args.get(p + 1).map(String::as_str).unwrap_or("docs/screenshots");
+        screenshot::run(&ui, &rt, dir);
+        return;
+    }
+
     let ctx = app::init(&ui, &rt);
 
     let tray_ok = rt.block_on(tray::start(ui.as_weak()));

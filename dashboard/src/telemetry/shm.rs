@@ -38,7 +38,11 @@ pub fn read_once() -> Option<ShmRead> {
 
     // rF2 / LMU: telemetry + scoring (scoring also carries car/track names).
     if let (Some(tb), Some(sb)) = (read("rFactor2SMMP_Telemetry"), read("rFactor2SMMP_Scoring")) {
-        if let Some(t) = pith_core::shm::parse_rf2(&tb, &sb) {
+        if let Some(mut t) = pith_core::shm::parse_rf2(&tb, &sb) {
+            // Extended buffer (if the bridge mirrors it) carries the TC/ABS levels.
+            if let Some(eb) = read("rFactor2SMMP_Extended") {
+                pith_core::shm::apply_rf2_extended(&mut t, &eb);
+            }
             let (car, track) = pith_core::shm::rf2_identity(&tb, &sb);
             return Some(ShmRead { telem: t, label: "rF2 / LMU (shm)", car, track });
         }

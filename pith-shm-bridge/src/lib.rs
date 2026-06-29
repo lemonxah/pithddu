@@ -15,6 +15,7 @@ pub const ACEVO_STATIC: &[&str] = &["Local\\acevo_pmf_static", "acevo_pmf_static
 pub const R3E: &[&str] = &["$R3E", "Local\\$R3E"];
 pub const RF2_TELEMETRY: &[&str] = &["$rFactor2SMMP_Telemetry$", "Local\\$rFactor2SMMP_Telemetry$"];
 pub const RF2_SCORING: &[&str] = &["$rFactor2SMMP_Scoring$", "Local\\$rFactor2SMMP_Scoring$"];
+pub const RF2_EXTENDED: &[&str] = &["$rFactor2SMMP_Extended$", "Local\\$rFactor2SMMP_Extended$"];
 
 /// What the shim sends each tick: the `$`-frame plus optional identity.
 pub struct ShimRead {
@@ -31,7 +32,10 @@ pub fn read_frame() -> Option<ShimRead> {
     use pith_core::shm;
     // rF2 / LMU needs both buffers (to match the player car + read names).
     if let (Some(t), Some(s)) = (win::read_any(RF2_TELEMETRY), win::read_any(RF2_SCORING)) {
-        if let Some(tel) = shm::parse_rf2(&t, &s) {
+        if let Some(mut tel) = shm::parse_rf2(&t, &s) {
+            if let Some(ext) = win::read_any(RF2_EXTENDED) {
+                shm::apply_rf2_extended(&mut tel, &ext); // TC/ABS levels
+            }
             let (car, track) = shm::rf2_identity(&t, &s);
             return Some(ShimRead { frame: tel.to_frame(), label: "rF2/LMU", car, track });
         }
@@ -79,4 +83,5 @@ pub const COPY_BLOCKS: &[(&[&str], &str)] = &[
     (R3E, "Z:\\dev\\shm\\$R3E"),
     (RF2_TELEMETRY, "Z:\\dev\\shm\\$rFactor2SMMP_Telemetry$"),
     (RF2_SCORING, "Z:\\dev\\shm\\$rFactor2SMMP_Scoring$"),
+    (RF2_EXTENDED, "Z:\\dev\\shm\\$rFactor2SMMP_Extended$"),
 ];

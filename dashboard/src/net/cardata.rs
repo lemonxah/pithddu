@@ -498,7 +498,8 @@ pub fn auto_apply_car_model(ctx: &Arc<Ctx>, s: &mut State, model: &str) {
     }
     s.last_auto_model = model.to_string();
     let sim = s.sim_of(s.game);
-    let nm = norm_name(model);
+    // Match on the bare model — drop entry/livery suffixes like "#23:WEC" (rF2/LMU).
+    let nm = norm_name(crate::util::clean_car_name(model));
     if nm.is_empty() {
         return;
     }

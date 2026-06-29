@@ -49,7 +49,17 @@ pub(crate) fn push_sim_frame(
         return;
     }
     let now = Instant::now();
-    ctx.lock().last_sim_frame = Some(now);
+    // Augment the frame with dashboard-computed fields the source didn't provide
+    // (fuel/lap, laps-left, delta). Lap-to-lap tracking lives in State.
+    let augmented = {
+        let mut s = ctx.lock();
+        s.last_sim_frame = Some(now);
+        pith_core::simhub::parse_line(line).map(|mut t| {
+            s.derived.update(&mut t);
+            frame_from_telem(&t)
+        })
+    };
+    let line: &str = augmented.as_deref().unwrap_or(line);
     // Push to the device (~30 Hz — smooth on the LCD, half the HID traffic of 60,
     // and no @T round-trip back from the device).
     if now.duration_since(*last_push) >= Duration::from_millis(33) {

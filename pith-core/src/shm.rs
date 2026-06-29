@@ -98,12 +98,27 @@ pub fn ac_static_identity(s: &[u8]) -> (Option<String>, Option<String>) {
     (non_empty(utf16_str(s, 68, 33)), non_empty(utf16_str(s, 134, 33)))
 }
 
+/// Merge rF2/LMU `$rFactor2SMMP_Extended$` aid levels into a telemetry snapshot —
+/// rF2 keeps TC/ABS *levels* only here, not in Telemetry/Scoring. File layout:
+/// 8-byte version block + `rF2Extended` (mPhysics @ +16), so `rF2PhysicsOptions`
+/// `mTractionControl` @ file 24, `mAntiLockBrakes` @ 25. (Written at session start
+/// and persisted, not per-frame.)
+pub fn apply_rf2_extended(t: &mut Telemetry, ext: &[u8]) {
+    if ext.len() < 26 {
+        return;
+    }
+    t.tc = ext[24] as i32; // mTractionControl (0..3)
+    t.abs = ext[25] as i32; // mAntiLockBrakes (0..2)
+}
+
 /// Car model + track from the rF2 / LMU scoring buffer: `mTrackName` (ASCII) at
 /// file offset 16; the player's `mVehicleName` at `560 + i*584 + 36` (player
 /// element found via `mIsPlayer@196`). Plain NUL-terminated `char`.
 pub fn rf2_identity(_telem: &[u8], scoring: &[u8]) -> (Option<String>, Option<String>) {
-    let track = if scoring.len() >= 16 + 64 {
-        ascii_str(scoring, 16, 64)
+    // mTrackName is the first field of rF2ScoringInfo, which starts at file
+    // offset 12 (8-byte version block + 4-byte mBytesUpdatedHint, no pad).
+    let track = if scoring.len() >= 12 + 64 {
+        ascii_str(scoring, 12, 64)
     } else {
         String::new()
     };
@@ -208,6 +223,13 @@ pub fn parse_r3e(b: &[u8]) -> Option<Telemetry> {
         t.oil_press_x10 = (le::f32(b, 1492) * 10.0).round() as i32; // oil pressure
         t.pit_limiter = (le::i32(b, 1572) == 1) as i32;
         t.headlights = (le::i32(b, 1620) > 0) as i32;
+        // aid_settings (abs@1536, tc@1540): -1 N/A, 0 off, 1 on, 5 = active now.
+        let abs_aid = le::i32(b, 1536);
+        let tc_aid = le::i32(b, 1540);
+        t.abs = if abs_aid == 5 { 1 } else { abs_aid.max(0) };
+        t.tc = if tc_aid == 5 { 1 } else { tc_aid.max(0) };
+        t.abs_active = (abs_aid == 5) as i32;
+        t.tc_active = (tc_aid == 5) as i32;
     }
     Some(t)
 }
@@ -222,11 +244,12 @@ pub fn parse_rf2(telem: &[u8], scoring: &[u8]) -> Option<Telemetry> {
     }
     let tn = (le::i32(telem, 12).max(0) as usize).min(128);
 
-    // Player mID from scoring (mNumVehicles@116, vehicles@560 stride 584,
-    // mID@0, mIsPlayer@196).
-    let player_id = (|| {
-        if scoring.len() < 120 {
-            return None;
+    // Find the player in scoring (mNumVehicles@116, vehicles@560 stride 584,
+    // mID@0, mIsPlayer@196): capture both the mID (to match telemetry) and the
+    // scoring element base (for lap times / position / sectors / flag below).
+    let (player_id, sbase) = (|| {
+        if scoring.len() < 122 {
+            return (None, None);
         }
         let n = (le::i32(scoring, 116).max(0) as usize).min(128);
         for i in 0..n {
@@ -235,10 +258,10 @@ pub fn parse_rf2(telem: &[u8], scoring: &[u8]) -> Option<Telemetry> {
                 break;
             }
             if scoring[base + 196] != 0 {
-                return Some(le::i32(scoring, base));
+                return (Some(le::i32(scoring, base)), Some(base));
             }
         }
-        None
+        (None, None)
     })();
 
     // Find the matching telemetry element; fall back to index 0.
@@ -280,6 +303,10 @@ pub fn parse_rf2(telem: &[u8], scoring: &[u8]) -> Option<Telemetry> {
     t.water_c = le::f64(telem, base + 364).round() as i32;
     t.oil_c = le::f64(telem, base + 372).round() as i32;
     t.laps_done = le::i32(telem, base + 20);
+    // rF2 has no current-lap-time field ("instantly becomes last"); derive it from
+    // mElapsedTime@12 − mLapStartET@24 (both doubles, seconds).
+    let cur = le::f64(telem, base + 12) - le::f64(telem, base + 24);
+    t.cur_lap_ms = (cur * 1000.0).round().max(0.0) as i32;
     t.fuel_cap_dl = (le::f64(telem, base + 608) * 10.0).round().max(0.0) as i32;
     // Status bytes: mHeadlights@543, mSpeedLimiter@604, mIgnitionStarter@619.
     t.headlights = (telem[base + 543] != 0) as i32;
@@ -307,6 +334,52 @@ pub fn parse_rf2(telem: &[u8], scoring: &[u8]) -> Option<Telemetry> {
     t.tt_fr_i = t.tt_fr_m; t.tt_fr_o = t.tt_fr_m;
     t.tt_rl_i = t.tt_rl_m; t.tt_rl_o = t.tt_rl_m;
     t.tt_rr_i = t.tt_rr_m; t.tt_rr_o = t.tt_rr_m;
+
+    // ---- Scoring-buffer fields for the player car (not in telemetry): position,
+    // lap/sector times, track %, session flag, field size. Times are doubles in
+    // seconds (negative = none); header base is 12, vehicle base 560 stride 584.
+    if let Some(sb) = sbase {
+        if scoring.len() >= sb + 584 {
+            let ms = |o: usize| {
+                let s = le::f64(scoring, sb + o);
+                if s >= 0.0 { (s * 1000.0).round() as i32 } else { 0 }
+            };
+            t.position = scoring[sb + 199] as i32; // mPlace (1-based)
+            t.best_lap_ms = ms(144);
+            t.last_lap_ms = ms(168);
+            let s1 = le::f64(scoring, sb + 176); // mCurSector1
+            let s2c = le::f64(scoring, sb + 184); // mCurSector2 (cumulative)
+            if s1 >= 0.0 {
+                t.s1_ms = (s1 * 1000.0).round() as i32;
+            }
+            if s1 >= 0.0 && s2c >= s1 {
+                t.s2_ms = ((s2c - s1) * 1000.0).round() as i32;
+            }
+            // track %: vehicle mLapDist@104 / track length (scoringInfo.mLapDist@100).
+            let lapdist = le::f64(scoring, sb + 104);
+            let tracklen = le::f64(scoring, 100);
+            if tracklen > 1.0 && lapdist >= 0.0 {
+                t.track_pct = ((lapdist / tracklen) * 1000.0).clamp(0.0, 1000.0) as i32;
+            }
+            // flag: session phase (file 120) + yellow (121) + per-car mFlag (sb+504).
+            let phase = scoring[120];
+            let yellow = scoring[121] as i8;
+            let carflag = scoring[sb + 504];
+            t.flag = if phase == 8 {
+                5 // checkered (session over)
+            } else if phase == 6 || yellow > 0 {
+                2 // yellow / full-course yellow
+            } else if carflag == 6 {
+                3 // blue
+            } else if phase == 5 {
+                1 // green
+            } else {
+                0
+            };
+            t.field_size = le::i32(scoring, 116); // mNumVehicles
+            t.total_laps = le::i32(scoring, 96).max(0); // mMaxLaps
+        }
+    }
     Some(t)
 }
 
@@ -333,16 +406,33 @@ mod tests {
 
     #[test]
     fn parses_r3e() {
-        let mut b = vec![0u8; 1600];
+        let mut b = vec![0u8; 1700]; // ≥1624 so the extended block (TC/ABS) is read
         b[1392..1396].copy_from_slice(&50.0f32.to_le_bytes());
         b[1396..1400].copy_from_slice(&785.40f32.to_le_bytes());
         b[1408..1412].copy_from_slice(&3i32.to_le_bytes());
         b[1500..1504].copy_from_slice(&1.0f32.to_le_bytes());
+        b[1536..1540].copy_from_slice(&1i32.to_le_bytes()); // abs aid = on
+        b[1540..1544].copy_from_slice(&5i32.to_le_bytes()); // tc aid = active
         let t = parse_r3e(&b).unwrap();
         assert_eq!(t.speed_kmh, 180);
         assert_eq!(t.rpm, 7500);
         assert_eq!(t.gear, b'3');
         assert_eq!(t.throttle, 100);
+        assert_eq!(t.abs, 1);
+        assert_eq!(t.tc, 1); // 5 (active) normalises to on
+        assert_eq!(t.tc_active, 1);
+        assert_eq!(t.abs_active, 0);
+    }
+
+    #[test]
+    fn rf2_extended_tc_abs() {
+        let mut ext = vec![0u8; 64];
+        ext[24] = 3; // mTractionControl
+        ext[25] = 2; // mAntiLockBrakes
+        let mut t = Telemetry::idle();
+        apply_rf2_extended(&mut t, &ext);
+        assert_eq!(t.tc, 3);
+        assert_eq!(t.abs, 2);
     }
 
     #[test]
@@ -363,8 +453,8 @@ mod tests {
     #[test]
     fn rf2_car_and_track() {
         let mut s = vec![0u8; 560 + 584];
-        // mTrackName @16
-        s[16..21].copy_from_slice(b"Sebr\0");
+        // mTrackName @ file 12 (header base 12)
+        s[12..17].copy_from_slice(b"Sebr\0");
         s[116..120].copy_from_slice(&1i32.to_le_bytes()); // mNumVehicles
         s[560 + 196] = 1; // mIsPlayer
         s[560 + 36..560 + 36 + 9].copy_from_slice(b"BMW M4\0\0\0"); // mVehicleName@36

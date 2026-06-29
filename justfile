@@ -47,6 +47,12 @@ shm-tools action="":
         echo "Installed shim, bridge + pith-shim-run to $HOME/pith/"
     fi
 
+# Render one PNG per dashboard page into docs/screenshots/ (for the README/docs).
+# Needs a display (renders briefly via the winit backend); uses seeded demo data.
+screenshots dir="docs/screenshots":
+    cargo build -p pith-dashboard
+    ./target/debug/pith-dashboard --shots "{{dir}}"
+
 # Show the current crate versions (from Cargo.toml) + the latest release tags.
 # Note: `just release` only creates/pushes a git tag — it does NOT edit Cargo.toml.
 version:

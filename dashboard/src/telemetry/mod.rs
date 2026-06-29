@@ -2,6 +2,7 @@ pub mod ac;
 pub mod acc;
 pub mod codemasters;
 pub mod decoders;
+pub mod derive;
 pub mod f1;
 pub mod field_registry;
 pub mod format;

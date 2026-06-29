@@ -121,6 +121,16 @@ fn seed_demo(u: &AppWindow, s: &mut State) {
 }
 
 pub fn init(ui: &AppWindow, rt: &tokio::runtime::Runtime) -> Arc<Ctx> {
+    init_impl(ui, rt, true)
+}
+
+/// Screenshot/headless setup: seed the demo + populate every UI model, but don't
+/// spawn the device/UDP/game loops or hit the network (offline, side-effect free).
+pub fn init_screenshot(ui: &AppWindow, rt: &tokio::runtime::Runtime) -> Arc<Ctx> {
+    init_impl(ui, rt, false)
+}
+
+fn init_impl(ui: &AppWindow, rt: &tokio::runtime::Runtime, live: bool) -> Arc<Ctx> {
     let mut s = State::default();
     seed_shift(&mut s);
     match load_presets(&s) {
@@ -191,6 +201,12 @@ pub fn init(ui: &AppWindow, rt: &tokio::runtime::Runtime) -> Arc<Ctx> {
     }
 
     crate::callbacks::wire_callbacks(ui, &ctx);
+
+    // Screenshot/headless mode stops here: no network, no background loops.
+    if !live {
+        return ctx;
+    }
+
     fetch_firmware_releases(&ctx);
     prefetch_game_data(&ctx);
     sync_database_if_stale(&ctx);

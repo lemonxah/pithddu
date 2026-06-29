@@ -45,6 +45,16 @@ fn main() {
                 last_label = r.label;
                 println!("pith-shim: streaming {}", r.label);
             }
+            // ~2 Hz debug readout so you can confirm what the source provides.
+            if ticks % 100 == 0 {
+                if let Some(t) = pith_core::simhub::parse_line(&r.frame) {
+                    println!(
+                        "pith-shim [{}] gear={} rpm={} kmh={} tc={} abs={} pit={} lights={} fuel={}",
+                        r.label, t.gear as char, t.rpm, t.speed_kmh, t.tc, t.abs,
+                        t.pit_limiter, t.headlights, t.fuel_dl,
+                    );
+                }
+            }
         }
         ticks = ticks.wrapping_add(1);
         std::thread::sleep(Duration::from_millis(20));

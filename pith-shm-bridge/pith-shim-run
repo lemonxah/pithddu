@@ -39,54 +39,65 @@ PITH_EXTRA="${PITH_EXTRA:-}"
 mkdir -p "$(dirname "$PITH_LOG")"
 log() { echo "[pith $(date '+%H:%M:%S')] $*" >>"$PITH_LOG"; }
 
-# Build the list of in-container commands to inject (each: "wine <path> [args]").
-inject_list=()
-if [ "$PITH_BRIDGE" = "1" ]; then
-    [ -f "$PITH_BRIDGE_EXE" ] && inject_list+=("$PITH_WINE $PITH_BRIDGE_EXE")
-else
-    [ -f "$PITH_SHIM" ] && inject_list+=("$PITH_WINE $PITH_SHIM $PITH_HOST $PITH_PORT")
-fi
+# Companion exes to also run in the prefix: ';'-separated paths. SPACES ARE OK —
+# do NOT backslash-escape them, e.g.  PITH_EXTRA="/games/Le Mans Ultimate/x.exe"
+extras=()
 if [ -n "$PITH_EXTRA" ]; then
     _oifs=$IFS; IFS=';'
     for _p in $PITH_EXTRA; do
         _p="${_p#"${_p%%[![:space:]]*}"}"; _p="${_p%"${_p##*[![:space:]]}"}" # trim
-        [ -n "$_p" ] && inject_list+=("$PITH_WINE $_p")
+        [ -n "$_p" ] && extras+=("$_p")
     done
     IFS=$_oifs
 fi
 
-log "start: bridge=$PITH_BRIDGE host=$PITH_HOST port=$PITH_PORT extra=[$PITH_EXTRA]"
+log "start: bridge=$PITH_BRIDGE host=$PITH_HOST port=$PITH_PORT extras=${#extras[@]}"
 
 # Ask pressure-vessel to expose a launcher service inside the game's container.
 export STEAM_COMPAT_LAUNCHER_SERVICE=proton
 
-if [ ${#inject_list[@]} -gt 0 ]; then
-    (
-        # Wait (up to ~90 s) for this app's launcher service to come up.
-        bus=""
-        for _ in $(seq 1 90); do
-            bus=$("$PITH_LAUNCH_CLIENT" --list 2>>"$PITH_LOG" \
-                  | grep -oEm1 'com\.steampowered\.App[0-9]+') && [ -n "$bus" ] && break
-            sleep 1
-        done
-        if [ -z "$bus" ]; then
-            log "ERROR: launcher service never appeared. Is '$PITH_LAUNCH_CLIENT' on PATH and does this Proton support STEAM_COMPAT_LAUNCHER_SERVICE?"
-            exit 0
-        fi
-        # Inject each program with its own launch-client (backgrounded so the
-        # long-running companions all coexist for the game's lifetime). wine takes
-        # the exe's Unix path — the host filesystem is visible in the container.
-        for cmd in "${inject_list[@]}"; do
-            log "injecting into $bus → $cmd"
-            # shellcheck disable=SC2086  # intentional word-split: pass path + args
-            "$PITH_LAUNCH_CLIENT" --bus-name="$bus" -- $cmd >>"$PITH_LOG" 2>&1 &
-        done
-        wait
-        log "injector exited"
-    ) &
-else
-    log "ERROR: nothing to inject (shim exe missing? set PITH_SHIM / PITH_EXTRA)"
-fi
+(
+    # Wait (up to ~90 s) for this app's launcher service to come up.
+    bus=""
+    for _ in $(seq 1 90); do
+        bus=$("$PITH_LAUNCH_CLIENT" --list 2>>"$PITH_LOG" \
+              | grep -oEm1 'com\.steampowered\.App[0-9]+') && [ -n "$bus" ] && break
+        sleep 1
+    done
+    if [ -z "$bus" ]; then
+        log "ERROR: launcher service never appeared. Is '$PITH_LAUNCH_CLIENT' reachable and does this Proton support STEAM_COMPAT_LAUNCHER_SERVICE?"
+        exit 0
+    fi
+
+    # Run a command in the container, backgrounded so long-running companions
+    # coexist. Quoted throughout → paths with spaces are safe.
+    inject() {
+        log "inject: $*"
+        "$PITH_LAUNCH_CLIENT" --bus-name="$bus" -- "$@" >>"$PITH_LOG" 2>&1 &
+    }
+    # Run an exe with its own folder as the working directory (FFB/companion tools
+    # usually read their config relative to cwd).
+    inject_in_dir() {
+        log "inject (cwd=$(dirname "$1")): $PITH_WINE $1"
+        "$PITH_LAUNCH_CLIENT" --bus-name="$bus" -- \
+            sh -c 'cd "$1" && exec "$2" "$3"' sh "$(dirname "$1")" "$PITH_WINE" "$1" \
+            >>"$PITH_LOG" 2>&1 &
+    }
+
+    if [ "$PITH_BRIDGE" = "1" ]; then
+        if [ -f "$PITH_BRIDGE_EXE" ]; then inject "$PITH_WINE" "$PITH_BRIDGE_EXE"
+        else log "skip: bridge exe not found: $PITH_BRIDGE_EXE"; fi
+    else
+        if [ -f "$PITH_SHIM" ]; then inject "$PITH_WINE" "$PITH_SHIM" "$PITH_HOST" "$PITH_PORT"
+        else log "skip: shim exe not found: $PITH_SHIM"; fi
+    fi
+    for e in "${extras[@]}"; do
+        if [ -f "$e" ]; then inject_in_dir "$e"
+        else log "WARN: extra exe NOT FOUND (check the path / spaces): $e"; fi
+    done
+    wait
+    log "injector exited"
+) &
 
 # Launch the game exactly as Steam intended.
 exec "$@"

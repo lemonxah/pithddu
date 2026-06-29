@@ -40,6 +40,14 @@ pub fn norm_name(s: &str) -> String {
         .collect()
 }
 
+/// Strip a trailing entry/livery suffix from a car name before a library lookup —
+/// e.g. rF2/LMU names like "BMW M4 GT3 #23:WEC" → "BMW M4 GT3". Cuts at the first
+/// `#` or `:` and trims.
+pub fn clean_car_name(s: &str) -> &str {
+    let cut = s.find(['#', ':']).unwrap_or(s.len());
+    s[..cut].trim()
+}
+
 pub fn car_variant(id: &str, name: &str) -> String {
     let norm_sep = |s: &str| -> String {
         s.chars()

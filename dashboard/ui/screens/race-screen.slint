@@ -466,7 +466,12 @@ export component RaceScreen inherits Rectangle {
             }
             return EventResult.reject;
         }
-    VerticalLayout {
+    // Scrollable page body so the edit-module card stays reachable on short or
+    // HiDPI-scaled displays (where the fixed-height column would otherwise clip).
+    Flickable {
+        viewport-width: self.width;
+        viewport-height: body.preferred-height;
+    body := VerticalLayout {
         padding: 24px;
         spacing: 16px;
         // header
@@ -536,9 +541,10 @@ export component RaceScreen inherits Rectangle {
                 }
             }
         }
-        // split body
+        // split body — definite height so the whole page (incl. the editor card
+        // below) has a known size and can scroll on short/scaled displays.
         HorizontalLayout {
-            vertical-stretch: 1; // fill above the full-width edit card below
+            height: 360px;
             spacing: 18px;
             // live preview stage
             Rectangle {
@@ -831,6 +837,7 @@ export component RaceScreen inherits Rectangle {
                 vertical-alignment: center;
             }
         }
+    }
     }
     }
 }

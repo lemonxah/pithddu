@@ -270,6 +270,10 @@ pub struct State {
     pub gt7_enabled: bool,
     pub gt7_host: String, // PlayStation IP (GT7 streams from the console)
     pub shm_enabled: bool, // read AC/ACC shared memory from /dev/shm (needs a bridge)
+
+    // Dashboard-side derived core fields (best/current lap, fuel/lap, delta) for
+    // sources that don't transmit them.
+    pub derived: crate::telemetry::derive::Derived,
 }
 
 impl Default for State {
@@ -362,6 +366,7 @@ impl Default for State {
             gt7_enabled: false,
             gt7_host: String::new(),
             shm_enabled: true,
+            derived: Default::default(),
         }
     }
 }
