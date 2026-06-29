@@ -105,12 +105,16 @@ mod tests {
         assert_eq!(field_id_from_str("speed_kmh"), 1);
         assert_eq!(field_id_from_str("rpm"), 2);
         assert_eq!(field_id_from_str("delta_ms"), 10);
-        assert_eq!(field_id_from_str("ignition"), 55);
-        assert_eq!(field_id_from_str("flag"), 56);
-        assert_eq!(field_id_from_str("track_pct"), 57);
+        // Registry order now mirrors the $-frame exactly (incl. inner/outer tyre
+        // temps, world pos, best sectors) so field id == frame token position.
+        assert_eq!(field_id_from_str("ignition"), 60);
+        assert_eq!(field_id_from_str("flag"), 61);
+        assert_eq!(field_id_from_str("track_pct"), 62);
+        assert_eq!(field_id_from_str("battery_pct"), 71);
+        assert_eq!(field_id_from_str("ers_state"), 72);
         assert_eq!(field_id_from_str("nope"), 0);
-        assert_eq!(FIELDS.len(), 57);
-        assert_eq!(FIELD_COUNT, 58);
+        assert_eq!(FIELDS.len(), 72);
+        assert_eq!(FIELD_COUNT, 73);
     }
 
     #[test]
@@ -121,7 +125,7 @@ mod tests {
         t.ignition = 1;
         assert_eq!(field_value(&t, 1), 212);
         assert_eq!(field_value(&t, 2), 6800);
-        assert_eq!(field_value(&t, 55), 1);
+        assert_eq!(field_value(&t, 60), 1); // ignition
         assert_eq!(field_value(&t, 0), 0);
         assert_eq!(field_value(&t, 999), 0);
     }

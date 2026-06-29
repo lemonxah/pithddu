@@ -15,6 +15,8 @@ pub const CATALOG: &[(&str, &str, &str)] = &[
     ("brakeBias", "Brake Bias", "Front bias %"),
     ("water", "Water Temp", "Coolant temp"),
     ("oil", "Oil Temp", "Oil temp"),
+    ("battery", "Battery (ERS)", "Hybrid state-of-charge %"),
+    ("ers", "ERS State", "Boost: idle/deploy/regen"),
     ("tcAbs", "TC / ABS", "Aid levels"),
     ("mapPosition", "Track Map", "Position dot on track"),
     ("flag", "Flag", "Current flag colour"),
@@ -107,6 +109,14 @@ pub fn default_spec(ty: &str) -> ModSpec {
             }];
         }
         "oil" => stat(&mut m, "oil_c", "OIL", DEG, "white"),
+        "battery" => {
+            stat(&mut m, "battery_pct", "BATT", "%", "green");
+            m.rules = vec![
+                ColorRule { op: "<".into(), v: 150, color: "red".into() },
+                ColorRule { op: "<".into(), v: 350, color: "amber".into() },
+            ];
+        }
+        "ers" => stat(&mut m, "ers_state", "ERS", "", "cyan"),
         "tcAbs" => m.kind = "tcDual".into(),
         "mapPosition" => m.kind = "map".into(),
         "flag" => {

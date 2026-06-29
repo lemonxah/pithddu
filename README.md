@@ -89,6 +89,7 @@ Columns: **Forza** · **F1** (Codemasters/EA) · **AMS2** (Automobilista 2 / Pro
 | fuel level | — *4 | U | U | — | — *4 | U | S | S | S | S | S |
 | fuel capacity | — | U | U | — | — | U | ⚠ | S | S | S | S |
 | fuel/lap · laps-left | C *6 | C *6 | C *6 | — *6 | — *6 | C *6 | C *6 | C *6 | C *6 | C *6 | C *6 |
+| battery · ERS state | — | — | — | — | — | — | — | — | ⚠ | S *h | — |
 | tyre temps | U | U | U | — | — | U | S | S | S | S | ⚠ |
 | tyre pressures | — | U | — | — | — | — | S | S | — | S | — |
 | tyre wear | ⚠ *8 | ⚠ | — | — | — | — | — *8 | — | — | — | — |
@@ -114,6 +115,7 @@ Columns: **Forza** · **F1** (Codemasters/EA) · **AMS2** (Automobilista 2 / Pro
 - **\*8** Tyre wear: present but **not populated by ACC**; Forza only sends it in the Motorsport-2023 format. **\*8b** ACC car/track come from the shared-memory static page (the shim sends `@CM`/`@MAP`); the broadcasting feed's `carModelType` is a numeric enum needing a name table (planned). **\*8c** AC EVO offsets are community-reverse-engineered + early-access → fragile.
 - **\*e** rF2/LMU TC/ABS *levels* aren't in Telemetry/Scoring — they're read from the **`$rFactor2SMMP_Extended$`** buffer (`rF2PhysicsOptions`), which is written at session start and persisted (not per-frame). The shim reads it directly; the bridge mirrors it to `/dev/shm`.
 - **\*9** RaceRoom car is a numeric **model-id** (needs the `r3e-data.json` map); its track name is a string (wiring planned).
+- **\*h** **Hybrid:** rF2/LMU hypercars & LMDh expose `mBatteryChargeFraction` (→ `battery_pct`) and `mElectricBoostMotorState` (→ `ers_state`: idle/deploy/regen) in the telemetry buffer — read directly via shm, no plugin. **LMU's "Virtual Energy" budget is NOT in the public shared-memory layout** (verified against `rF2State.h`); it's the one field that would require a custom in-game plugin.
 
 Bottom line: **shared-memory titles (ACC / AC / EVO / rF2-LMU / RaceRoom)** can reach
 near-full coverage via the in-prefix `pith-shm-bridge` tools; **UDP-only titles**

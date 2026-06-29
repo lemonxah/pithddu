@@ -312,6 +312,15 @@ pub fn parse_rf2(telem: &[u8], scoring: &[u8]) -> Option<Telemetry> {
     t.headlights = (telem[base + 543] != 0) as i32;
     t.pit_limiter = (telem[base + 604] != 0) as i32;
     t.ignition = (telem[base + 619] != 0) as i32;
+    // Hybrid / electric boost (LMU hypercars & LMDh): battery state-of-charge
+    // (mBatteryChargeFraction@696, 0..1 → 0..100.0%) and the boost-motor state
+    // (mElectricBoostMotorState@736: 0 unavailable, 1 inactive, 2 propulsion,
+    // 3 regeneration).
+    let batt = le::f64(telem, base + 696);
+    if batt.is_finite() {
+        t.battery_pct = (batt * 1000.0).round().clamp(0.0, 1000.0) as i32;
+    }
+    t.ers_state = telem[base + 736] as i32;
     // Per-wheel (FL,FR,RL,RR @ base+848 stride 260): centre temp[1]@+136 (Kelvin),
     // brake temp@+24 (°C), pressure@+120 (kPa).
     let k2c = |k: f64| (k - 273.15).round() as i32;

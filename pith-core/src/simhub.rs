@@ -106,6 +106,10 @@ pub struct Telemetry {
     pub bs1_ms: i32,
     pub bs2_ms: i32,
     pub bs3_ms: i32,
+    // Hybrid / electric boost (LMU & other ERS cars). battery_pct in 0..=1000
+    // (= 0..100.0%); ers_state 0 unavailable, 1 inactive, 2 propulsion, 3 regen.
+    pub battery_pct: i32,
+    pub ers_state: i32,
 }
 
 impl Telemetry {
@@ -201,6 +205,8 @@ impl Telemetry {
         a!(self.bs1_ms);
         a!(self.bs2_ms);
         a!(self.bs3_ms);
+        a!(self.battery_pct);
+        a!(self.ers_state);
         s
     }
 }
@@ -418,6 +424,8 @@ pub fn parse_line(line: &str) -> Option<Telemetry> {
         if !c.opt_field(&mut t.bs1_ms) { break; }
         if !c.opt_field(&mut t.bs2_ms) { break; }
         if !c.opt_field(&mut t.bs3_ms) { break; }
+        if !c.opt_field(&mut t.battery_pct) { break; }
+        if !c.opt_field(&mut t.ers_state) { break; }
         break;
     }
 
