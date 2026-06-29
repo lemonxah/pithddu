@@ -1,7 +1,7 @@
 // Shared structs, enums and global singletons. C++ owns the data and writes
 // these globals; the UI reads them and invokes callbacks for actions.
 
-export enum Page { overview, race, shift, cars, firmware, device }
+export enum Page { overview, race, shift, cars, udp, firmware, device }
 
 // ---- Telemetry (live device mirror) ----
 export struct TyreCell { temp: int, col: color }
@@ -42,6 +42,47 @@ export global Telemetry {
         #0c0d10, #0c0d10, #0c0d10, #0c0d10, #0c0d10, #0c0d10,
         #0c0d10, #0c0d10, #0c0d10, #0c0d10, #0c0d10, #0c0d10 ];
     in property <bool> redline-active: false;  // drives blink in previews
+}
+
+// ---- Telemetry UDP server (direct game decoders + SimHub plugin over UDP) ----
+export global TelemetryUdp {
+    in-out property <int> port: 28909;          // bind port (editable)
+    in property <bool> listening: false;        // socket bound OK?
+    in property <int> bound-port: 0;            // port the socket is actually bound to
+    in property <int> packets: 0;               // total datagrams accepted
+    in property <int> pps: 0;                   // datagrams/second (live)
+    in property <string> last-source: "";       // "Forza Horizon 6" / "SimHub plugin"
+    in property <string> local-ip: "";          // this PC's LAN IP (point the game here)
+    in property <[string]> supported: [];       // directly-decoded games
+
+    callback set-port(int);
+
+    // ---- active connectors (we reach out to the game) ----
+    // ACC broadcasting (auto-connects when ACC is detected running).
+    in-out property <bool> acc-on: true;
+    in-out property <string> acc-host: "127.0.0.1";
+    in-out property <int> acc-port: 9000;
+    in-out property <string> acc-password: "asd";
+    in property <string> acc-status: "Off";
+    callback set-acc(bool /*on*/, string /*host*/, int /*port*/, string /*password*/);
+
+    // Assetto Corsa (original) handshake (auto-connects when AC is detected).
+    in-out property <bool> ac-on: true;
+    in-out property <string> ac-host: "127.0.0.1";
+    in-out property <int> ac-port: 9996;
+    in property <string> ac-status: "Off";
+    callback set-ac(bool, string, int);
+
+    // Gran Turismo 7 / Sport (manual: needs the console's IP).
+    in-out property <bool> gt7-on: false;
+    in-out property <string> gt7-host: "";
+    in property <string> gt7-status: "Off";
+    callback set-gt7(bool, string);
+
+    // Native shared-memory reader (Linux /dev/shm, e.g. AC/ACC via a bridge).
+    in-out property <bool> shm-on: true;
+    in property <string> shm-status: "Off";
+    callback set-shm(bool);
 }
 
 // ---- Shift lights config (§5) ----

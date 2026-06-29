@@ -6,7 +6,9 @@
 //! byte-compatible with the pithddu-dashboard app.
 
 pub mod format;
+pub mod le;
 pub mod shift;
+pub mod shm;
 pub mod simhub;
 
 /// Telemetry field registry, generated from `main/field_registry.json`.

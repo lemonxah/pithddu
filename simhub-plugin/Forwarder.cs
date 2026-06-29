@@ -5,33 +5,33 @@ using System.Text;
 namespace PithDdu.SimHubPlugin
 {
     /// <summary>
-    /// Sends one telemetry frame per call to the dashboard over TCP, lazily
-    /// (re)connecting and swallowing transport errors so a dropped link never
-    /// stalls SimHub's data thread. Reconnects are throttled to once a second.
+    /// Sends one telemetry frame per call to the dashboard over UDP, one datagram
+    /// per frame. UDP is connectionless and fire-and-forget, so a missing or
+    /// restarted dashboard never stalls SimHub's data thread — the datagrams are
+    /// simply dropped until it's listening again. The socket is created lazily and
+    /// re-created (with the new endpoint) whenever the settings change.
     /// </summary>
     public sealed class Forwarder : IDisposable
     {
         private readonly object gate = new object();
         private PithSettings cfg = new PithSettings();
 
-        private TcpClient tcp;
-        private NetworkStream tcpStream;
-        private int lastConnectTick = -100000;
-        private bool connected;
+        private UdpClient udp;
+        private bool ready;
 
         public string Status { get; private set; } = "idle";
 
-        /// <summary>True while the TCP link to the dashboard is open.</summary>
-        public bool Connected { get { lock (gate) { return connected; } } }
+        /// <summary>True while a UDP socket is open and enabled. (UDP is
+        /// connectionless, so this is "ready to send", not a live link.)</summary>
+        public bool Connected { get { lock (gate) { return ready; } } }
 
         public void Configure(PithSettings settings)
         {
             lock (gate)
             {
                 cfg = settings;
-                // Force a clean reconnect with the new parameters.
+                // Re-open against the new endpoint on the next send.
                 CloseLocked();
-                lastConnectTick = -100000;
             }
         }
 
@@ -40,12 +40,12 @@ namespace PithDdu.SimHubPlugin
             lock (gate)
             {
                 if (!cfg.Enabled) { return; }
-                if (!connected && !TryConnectLocked()) { return; }
+                if (!ready && !TryOpenLocked()) { return; }
 
-                var bytes = Encoding.ASCII.GetBytes(frame + "\n");
+                var bytes = Encoding.ASCII.GetBytes(frame);
                 try
                 {
-                    tcpStream.Write(bytes, 0, bytes.Length);
+                    udp.Send(bytes, bytes.Length);
                 }
                 catch (Exception e)
                 {
@@ -55,25 +55,21 @@ namespace PithDdu.SimHubPlugin
             }
         }
 
-        private bool TryConnectLocked()
+        private bool TryOpenLocked()
         {
-            int now = Environment.TickCount;
-            // Throttle reconnect attempts (TickCount can wrap; treat as ~1s window).
-            if (unchecked(now - lastConnectTick) < 1000) { return false; }
-            lastConnectTick = now;
-
             try
             {
-                tcp = new TcpClient { NoDelay = true };
-                tcp.Connect(cfg.Host, cfg.Port);
-                tcpStream = tcp.GetStream();
-                connected = true;
-                Status = "connected (" + cfg.Host + ":" + cfg.Port + ")";
+                udp = new UdpClient();
+                // "Connect" on a UDP socket only fixes the default destination; no
+                // handshake happens, so this never blocks or fails on a dead peer.
+                udp.Connect(cfg.Host, cfg.Port);
+                ready = true;
+                Status = "sending → " + cfg.Host + ":" + cfg.Port + " (UDP)";
                 return true;
             }
             catch (Exception e)
             {
-                Status = "connecting… (" + e.Message + ")";
+                Status = "open failed: " + e.Message;
                 CloseLocked();
                 return false;
             }
@@ -81,11 +77,9 @@ namespace PithDdu.SimHubPlugin
 
         private void CloseLocked()
         {
-            connected = false;
-            try { tcpStream?.Dispose(); } catch { }
-            try { tcp?.Close(); } catch { }
-            tcpStream = null;
-            tcp = null;
+            ready = false;
+            try { udp?.Close(); } catch { }
+            udp = null;
         }
 
         public void Dispose()

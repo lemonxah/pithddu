@@ -49,6 +49,9 @@ pub fn active_car_path() -> PathBuf {
 pub fn shift_cfg_path() -> PathBuf {
     app_dir().join("shiftcfg.json")
 }
+pub fn udp_cfg_path() -> PathBuf {
+    app_dir().join("udp.json")
+}
 pub fn board_path() -> PathBuf {
     app_dir().join("board.txt")
 }

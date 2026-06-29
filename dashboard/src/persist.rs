@@ -596,6 +596,56 @@ pub fn load_active_car(s: &mut State) -> bool {
     true
 }
 
+pub fn save_udp_cfg(s: &State) {
+    let j = json!({
+        "port": s.udp_port,
+        "accEnabled": s.acc_enabled,
+        "accHost": s.acc_host,
+        "accPort": s.acc_port,
+        "accPassword": s.acc_password,
+        "acEnabled": s.ac_enabled,
+        "acHost": s.ac_host,
+        "acPort": s.ac_port,
+        "gt7Enabled": s.gt7_enabled,
+        "gt7Host": s.gt7_host,
+        "shmEnabled": s.shm_enabled,
+    });
+    let _ = std::fs::write(udp_cfg_path(), j.to_string());
+}
+
+pub fn load_udp_cfg(s: &mut State) {
+    let body = read_file(&udp_cfg_path());
+    if body.is_empty() {
+        return;
+    }
+    let j: Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let port = jint(&j, "port", s.udp_port as i64);
+    if (1..=65535).contains(&port) {
+        s.udp_port = port as u16;
+    }
+    s.acc_enabled = jbool(&j, "accEnabled", s.acc_enabled);
+    s.acc_host = jstr(&j, "accHost", &s.acc_host);
+    s.acc_port = clamp_port(jint(&j, "accPort", s.acc_port as i64), s.acc_port);
+    s.acc_password = jstr(&j, "accPassword", &s.acc_password);
+    s.ac_enabled = jbool(&j, "acEnabled", s.ac_enabled);
+    s.ac_host = jstr(&j, "acHost", &s.ac_host);
+    s.ac_port = clamp_port(jint(&j, "acPort", s.ac_port as i64), s.ac_port);
+    s.gt7_enabled = jbool(&j, "gt7Enabled", s.gt7_enabled);
+    s.gt7_host = jstr(&j, "gt7Host", &s.gt7_host);
+    s.shm_enabled = jbool(&j, "shmEnabled", s.shm_enabled);
+}
+
+fn clamp_port(v: i64, default: u16) -> u16 {
+    if (1..=65535).contains(&v) {
+        v as u16
+    } else {
+        default
+    }
+}
+
 pub fn save_shift_cfg(s: &State) {
     let j = json!({
         "firstLedPct": s.first_led_pct,

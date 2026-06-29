@@ -1,0 +1,234 @@
+// Telemetry UDP — configure the UDP telemetry server port and see which games
+// can stream directly to it (plus the SimHub plugin over UDP).
+import { Theme } from "../theme.slint";
+import { AppState, TelemetryUdp } from "../models.slint";
+import { Card, SectionLabel, PrimaryButton, Dot, Mono, ToggleSwitch } from "../widgets.slint";
+import { LineEdit } from "std-widgets.slint";
+
+// One active-connector row: toggle + name + live status + inline config fields.
+component ConnRow inherits HorizontalLayout {
+    in property <string> name;
+    in property <string> status;
+    in property <bool> on;
+    in property <bool> connected;
+    callback toggled(bool);
+    spacing: 10px;
+    VerticalLayout { alignment: center; ToggleSwitch { on: root.on; toggled(v) => { root.toggled(v); } } }
+    VerticalLayout {
+        alignment: center;
+        min-width: 200px;
+        Text { text: root.name; color: Theme.text; font-family: Theme.mono-font; font-size: 13px; }
+    }
+    VerticalLayout { alignment: center; Dot { tint: root.connected ? Theme.green : (root.on ? Theme.amber : Theme.text3); } }
+    VerticalLayout {
+        alignment: center;
+        Text { text: root.status; color: root.connected ? Theme.green : Theme.text3; font-size: 11px; }
+    }
+    @children
+}
+
+export component UdpScreen inherits Rectangle {
+    Flickable {
+        VerticalLayout {
+            padding: 24px;
+            spacing: 16px;
+            alignment: start;
+
+            // header
+            VerticalLayout {
+                spacing: 3px;
+                Text { text: "Telemetry UDP"; color: Theme.text; font-family: Theme.display-font; font-size: 24px; font-weight: 700; }
+                Text { text: "Receive live telemetry over UDP — directly from supported games, or from the SimHub plugin."; color: Theme.text3; font-size: 13px; }
+            }
+
+            // ---- UDP server card ----
+            Card {
+                vertical-stretch: 0;
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 16px;
+
+                    SectionLabel { text: "UDP SERVER"; }
+
+                    HorizontalLayout {
+                        spacing: 20px;
+                        // port editor
+                        VerticalLayout {
+                            spacing: 6px;
+                            Text { text: "LISTEN PORT"; color: Theme.text3; font-family: Theme.display-font; font-size: 10.5px; letter-spacing: 1.2px; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                port-edit := LineEdit {
+                                    width: 120px;
+                                    text: "\{TelemetryUdp.port}";
+                                    input-type: number;
+                                    accepted(t) => { TelemetryUdp.set-port(t.to-float()); }
+                                }
+                                PrimaryButton {
+                                    text: "APPLY";
+                                    clicked => { TelemetryUdp.set-port(port-edit.text.to-float()); }
+                                }
+                            }
+                        }
+                        Rectangle { width: 1px; background: Theme.line; }
+                        // live status
+                        VerticalLayout {
+                            spacing: 6px;
+                            Text { text: "STATUS"; color: Theme.text3; font-family: Theme.display-font; font-size: 10.5px; letter-spacing: 1.2px; }
+                            HorizontalLayout {
+                                spacing: 7px;
+                                VerticalLayout { alignment: center; Dot { tint: TelemetryUdp.listening ? Theme.green : Theme.red; } }
+                                Text {
+                                    text: TelemetryUdp.listening
+                                        ? "Listening on 0.0.0.0:" + TelemetryUdp.bound-port
+                                        : "Not bound — port in use?";
+                                    color: Theme.text;
+                                    font-family: Theme.mono-font;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        Rectangle { }
+                    }
+
+                    // counters
+                    HorizontalLayout {
+                        spacing: 28px;
+                        for f in [
+                            { k: "SOURCE", v: TelemetryUdp.last-source != "" ? TelemetryUdp.last-source : "—" },
+                            { k: "PACKETS/S", v: TelemetryUdp.pps + "" },
+                            { k: "TOTAL", v: TelemetryUdp.packets + "" },
+                        ]: VerticalLayout {
+                            spacing: 5px;
+                            Text { text: f.k; color: Theme.text3; font-family: Theme.display-font; font-size: 10.5px; letter-spacing: 1.2px; }
+                            Text { text: f.v; color: Theme.text; font-family: Theme.mono-font; font-size: 14px; }
+                        }
+                        Rectangle { }
+                    }
+                }
+            }
+
+            // ---- direct game decoders ----
+            Card {
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 14px;
+                    SectionLabel { text: "DIRECT GAME DECODERS"; }
+                    Text {
+                        text: "These games stream their native telemetry straight to the port above — no SimHub needed.";
+                        color: Theme.text3; font-size: 12px; wrap: word-wrap;
+                    }
+                    for g in TelemetryUdp.supported: HorizontalLayout {
+                        spacing: 9px;
+                        VerticalLayout { alignment: center; Dot { tint: TelemetryUdp.last-source == g ? Theme.green : Theme.text3; } }
+                        Text { text: g; color: Theme.text; font-family: Theme.mono-font; font-size: 13px; vertical-alignment: center; }
+                        Rectangle { }
+                        Text {
+                            text: TelemetryUdp.last-source == g ? "receiving" : "ready";
+                            color: TelemetryUdp.last-source == g ? Theme.green : Theme.text3;
+                            font-size: 11px; vertical-alignment: center;
+                        }
+                    }
+                    Rectangle { height: 2px; }
+                    HorizontalLayout {
+                        spacing: 9px;
+                        VerticalLayout { alignment: center; Dot { tint: TelemetryUdp.last-source == "SimHub plugin" ? Theme.green : Theme.text3; } }
+                        Text { text: "SimHub plugin (any other game)"; color: Theme.text2; font-family: Theme.mono-font; font-size: 13px; vertical-alignment: center; }
+                        Rectangle { }
+                    }
+                }
+            }
+
+            // ---- active connectors (we reach out to the game) ----
+            Card {
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 14px;
+                    SectionLabel { text: "ACTIVE CONNECTORS"; }
+                    Text {
+                        text: "These reach out to the game instead of listening. ACC / Assetto Corsa auto-connect when the game is detected running.";
+                        color: Theme.text3; font-size: 12px; wrap: word-wrap;
+                    }
+                    // ACC
+                    ConnRow {
+                        name: "ACC (broadcasting)";
+                        status: TelemetryUdp.acc-status;
+                        on: TelemetryUdp.acc-on;
+                        connected: TelemetryUdp.acc-status == "Connected";
+                        toggled(v) => { TelemetryUdp.set-acc(v, acc-host.text, acc-port.text.to-float(), acc-pw.text); }
+                        acc-host := LineEdit { width: 120px; text: TelemetryUdp.acc-host; placeholder-text: "host"; edited => { TelemetryUdp.set-acc(TelemetryUdp.acc-on, self.text, acc-port.text.to-float(), acc-pw.text); } }
+                        acc-port := LineEdit { width: 70px; text: "\{TelemetryUdp.acc-port}"; input-type: number; edited => { TelemetryUdp.set-acc(TelemetryUdp.acc-on, acc-host.text, self.text.to-float(), acc-pw.text); } }
+                        acc-pw := LineEdit { width: 90px; text: TelemetryUdp.acc-password; placeholder-text: "password"; edited => { TelemetryUdp.set-acc(TelemetryUdp.acc-on, acc-host.text, acc-port.text.to-float(), self.text); } }
+                    }
+                    Text {
+                        text: "ACC over UDP has no RPM, so shift-lights need a shared-memory bridge (see notes). Speed / gear / position / lap times / track map work.";
+                        color: Theme.amber; font-size: 10px; wrap: word-wrap;
+                    }
+                    // Assetto Corsa (original)
+                    ConnRow {
+                        name: "Assetto Corsa (orig.)";
+                        status: TelemetryUdp.ac-status;
+                        on: TelemetryUdp.ac-on;
+                        connected: TelemetryUdp.ac-status == "Connected";
+                        toggled(v) => { TelemetryUdp.set-ac(v, ac-host.text, ac-port.text.to-float()); }
+                        ac-host := LineEdit { width: 120px; text: TelemetryUdp.ac-host; placeholder-text: "host"; edited => { TelemetryUdp.set-ac(TelemetryUdp.ac-on, self.text, ac-port.text.to-float()); } }
+                        ac-port := LineEdit { width: 70px; text: "\{TelemetryUdp.ac-port}"; input-type: number; edited => { TelemetryUdp.set-ac(TelemetryUdp.ac-on, ac-host.text, self.text.to-float()); } }
+                    }
+                    // Gran Turismo 7
+                    ConnRow {
+                        name: "Gran Turismo 7";
+                        status: TelemetryUdp.gt7-status;
+                        on: TelemetryUdp.gt7-on;
+                        connected: TelemetryUdp.gt7-status == "Connected";
+                        toggled(v) => { TelemetryUdp.set-gt7(v, gt7-host.text); }
+                        gt7-host := LineEdit { width: 150px; text: TelemetryUdp.gt7-host; placeholder-text: "PlayStation IP"; edited => { TelemetryUdp.set-gt7(TelemetryUdp.gt7-on, self.text); } }
+                    }
+                    // Shared memory (Linux /dev/shm)
+                    ConnRow {
+                        name: "Shared memory (Linux)";
+                        status: TelemetryUdp.shm-status;
+                        on: TelemetryUdp.shm-on;
+                        connected: TelemetryUdp.shm-status == "Reading";
+                        toggled(v) => { TelemetryUdp.set-shm(v); }
+                    }
+                    Text {
+                        text: "Reads AC / ACC / AC EVO / rFactor 2 / LMU / RaceRoom from /dev/shm — gives ACC its RPM / shift-lights natively. Needs an in-prefix bridge (simshmbridge / shm-bridge); see SHARED_MEMORY.md.";
+                        color: Theme.text3; font-size: 10px; wrap: word-wrap;
+                    }
+                }
+            }
+
+            // ---- how to point a game here ----
+            Card {
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 10px;
+                    SectionLabel { text: "POINT A GAME HERE"; }
+                    Text {
+                        text: "In the game's telemetry / “Data Out” settings, set the destination IP to this PC and the port to match above:";
+                        color: Theme.text3; font-size: 12px; wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        spacing: 28px;
+                        VerticalLayout {
+                            spacing: 5px;
+                            Text { text: "IP ADDRESS"; color: Theme.text3; font-family: Theme.display-font; font-size: 10.5px; letter-spacing: 1.2px; }
+                            Mono { text: TelemetryUdp.local-ip != "" ? TelemetryUdp.local-ip : "this PC's IP"; color: Theme.text; font-size: 14px; }
+                        }
+                        VerticalLayout {
+                            spacing: 5px;
+                            Text { text: "PORT"; color: Theme.text3; font-family: Theme.display-font; font-size: 10.5px; letter-spacing: 1.2px; }
+                            Mono { text: TelemetryUdp.bound-port > 0 ? TelemetryUdp.bound-port + "" : TelemetryUdp.port + ""; color: Theme.text; font-size: 14px; }
+                        }
+                        Rectangle { }
+                    }
+                    Text {
+                        text: "Same PC? Use 127.0.0.1. Console or another PC on your LAN? Use the IP above.";
+                        color: Theme.text3; font-size: 11px; wrap: word-wrap;
+                    }
+                }
+            }
+        }
+    }
+}

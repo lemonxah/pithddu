@@ -1,0 +1,75 @@
+//! Native Linux shared-memory telemetry reader.
+//!
+//! Sims expose telemetry via Windows named shared memory. Under Proton/Wine those
+//! mappings are anonymous (pagefile-backed) and NOT visible at a stable
+//! `/dev/shm` path — so this reader only works when an in-prefix **bridge**
+//! (`simshmbridge` / our `pith-shm-bridge`) re-backs the mapping into a real
+//! `/dev/shm/<name>` file. When that file exists we read + parse it directly,
+//! giving full physics (incl. RPM → shift-lights) with no SimHub and no plugin.
+//! See `SHARED_MEMORY.md`.
+//!
+//! The struct parsers live in `pith_core::shm` (shared with the in-prefix tools);
+//! this module only does the Linux `/dev/shm` discovery + reading.
+
+use pith_core::simhub::Telemetry;
+
+/// One parsed shared-memory snapshot: telemetry plus optional identity (car model
+/// → library/LED match, track → self-learned map).
+pub struct ShmRead {
+    pub telem: Telemetry,
+    pub label: &'static str,
+    pub car: Option<String>,
+    pub track: Option<String>,
+}
+
+/// Scan `/dev/shm` once and return the first sim block we can parse. rF2/LMU and
+/// AC/ACC read multiple pages (telemetry+scoring, physics+graphics) to fill the
+/// full field set + identity.
+pub fn read_once() -> Option<ShmRead> {
+    let entries: Vec<(String, std::path::PathBuf)> = match std::fs::read_dir("/dev/shm") {
+        Ok(rd) => rd
+            .flatten()
+            .map(|e| (e.file_name().to_string_lossy().to_string(), e.path()))
+            .collect(),
+        Err(_) => return None,
+    };
+    let find = |needle: &str| entries.iter().find(|(n, _)| n.contains(needle)).map(|(_, p)| p);
+    let read = |needle: &str| find(needle).and_then(|p| std::fs::read(p).ok());
+
+    // rF2 / LMU: telemetry + scoring (scoring also carries car/track names).
+    if let (Some(tb), Some(sb)) = (read("rFactor2SMMP_Telemetry"), read("rFactor2SMMP_Scoring")) {
+        if let Some(t) = pith_core::shm::parse_rf2(&tb, &sb) {
+            let (car, track) = pith_core::shm::rf2_identity(&tb, &sb);
+            return Some(ShmRead { telem: t, label: "rF2 / LMU (shm)", car, track });
+        }
+    }
+    // AC / ACC / AC EVO: physics + graphics (+ static for identity).
+    for (phys, graph, stat, label) in [
+        ("acevo_pmf_physics", "acevo_pmf_graphics", "acevo_pmf_static", "AC EVO (shm)"),
+        ("acpmf_physics", "acpmf_graphics", "acpmf_static", "AC/ACC (shm)"),
+    ] {
+        if let Some(pb) = read(phys) {
+            if let Some(mut t) = pith_core::shm::parse_ac_physics(&pb) {
+                if let Some(gb) = read(graph) {
+                    pith_core::shm::apply_acc_graphics(&mut t, &gb);
+                }
+                // Static-page identity is AC/ACC only (EVO's layout differs).
+                let (car, track) = if label == "AC/ACC (shm)" {
+                    read(stat)
+                        .map(|sb| pith_core::shm::ac_static_identity(&sb))
+                        .unwrap_or((None, None))
+                } else {
+                    (None, None)
+                };
+                return Some(ShmRead { telem: t, label, car, track });
+            }
+        }
+    }
+    // RaceRoom (single buffer; identity is numeric only).
+    if let Some(b) = read("R3E") {
+        if let Some(t) = pith_core::shm::parse_r3e(&b) {
+            return Some(ShmRead { telem: t, label: "RaceRoom (shm)", car: None, track: None });
+        }
+    }
+    None
+}

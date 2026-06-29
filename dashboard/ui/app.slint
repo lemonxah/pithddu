@@ -20,11 +20,12 @@ import { OverviewScreen } from "screens/overview.slint";
 import { RaceScreen } from "screens/race-screen.slint";
 import { ShiftScreen } from "screens/shift-lights.slint";
 import { CarsScreen } from "screens/car-library.slint";
+import { UdpScreen } from "screens/udp.slint";
 import { FirmwareScreen } from "screens/firmware.slint";
 import { DeviceConfigScreen } from "screens/device.slint";
 
 // Re-export globals so C++ can reach them via the generated header.
-export { AppState, Telemetry, ShiftCfg, Buttons, RaceLayout, CarLib, Firmware, DeviceCaps, DeviceCfg, DeviceLog } from "models.slint";
+export { AppState, Telemetry, TelemetryUdp, ShiftCfg, Buttons, RaceLayout, CarLib, Firmware, DeviceCaps, DeviceCfg, DeviceLog } from "models.slint";
 
 export component AppWindow inherits Window {
     title: "Pith Dashboard";
@@ -55,6 +56,7 @@ export component AppWindow inherits Window {
                     if AppState.page == Page.race: RaceScreen { }
                     if AppState.page == Page.shift: ShiftScreen { }
                     if AppState.page == Page.cars: CarsScreen { }
+                    if AppState.page == Page.udp: UdpScreen { }
                     if AppState.page == Page.firmware: FirmwareScreen { }
                     if AppState.page == Page.device: DeviceConfigScreen { }
                 }

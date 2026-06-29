@@ -1,6 +1,5 @@
-/target
-/firmware/target
-/firmware/.embuild
+target
+.embuild
 **/preview.png
 *.swp
 .DS_Store

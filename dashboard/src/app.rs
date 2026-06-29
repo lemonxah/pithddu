@@ -148,6 +148,7 @@ pub fn init(ui: &AppWindow, rt: &tokio::runtime::Runtime) -> Arc<Ctx> {
     }
     load_active_car(&mut s);
     load_shift_cfg(&mut s);
+    load_udp_cfg(&mut s);
     seed_boards(&mut s);
     load_board(&mut s);
     rt.block_on(load_manifest_from_cache_or_net(&mut s));
@@ -186,6 +187,7 @@ pub fn init(ui: &AppWindow, rt: &tokio::runtime::Runtime) -> Arc<Ctx> {
         push_classes(ui, &mut st);
         rebuild_filtered(&mut st);
         push_car_results(ui, &st);
+        crate::ui_bridge::udp::push_udp_cfg(ui, &st);
     }
 
     crate::callbacks::wire_callbacks(ui, &ctx);
@@ -206,10 +208,31 @@ pub fn init(ui: &AppWindow, rt: &tokio::runtime::Runtime) -> Arc<Ctx> {
         let c = ctx.clone();
         move || crate::loops::game_loop(c)
     });
-    // SimHub-plugin telemetry receiver (TCP :28909 → device over HID).
+    // UDP telemetry receiver: SimHub-plugin text frames + native game decoders
+    // (Forza Horizon 6 first) on the configured port → device over HID.
     rt.spawn_blocking({
         let c = ctx.clone();
-        move || crate::loops::sim_listener_loop(c)
+        move || crate::loops::udp_listener_loop(c)
+    });
+    // Active connectors: ACC + Assetto Corsa auto-connect when detected running;
+    // GT7 streams from the configured PlayStation IP.
+    rt.spawn_blocking({
+        let c = ctx.clone();
+        move || crate::loops::acc_connector_loop(c)
+    });
+    rt.spawn_blocking({
+        let c = ctx.clone();
+        move || crate::loops::ac_connector_loop(c)
+    });
+    rt.spawn_blocking({
+        let c = ctx.clone();
+        move || crate::loops::gt7_connector_loop(c)
+    });
+    // Native shared-memory reader (Linux /dev/shm via a bridge) — gives AC/ACC
+    // RPM/shift-lights with no SimHub/plugin.
+    rt.spawn_blocking({
+        let c = ctx.clone();
+        move || crate::loops::shm_reader_loop(c)
     });
 
     ctx

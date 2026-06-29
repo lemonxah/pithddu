@@ -8,8 +8,9 @@ namespace PithDdu.SimHubPlugin
 {
     /// <summary>
     /// SimHub plugin that streams the Pith "$"-frame to the Pith DDU dashboard
-    /// over TCP. The dashboard parses the frame with the same code the firmware
-    /// uses, so there is nothing new to decode downstream.
+    /// over UDP (one datagram per frame). The dashboard's UDP telemetry server
+    /// parses the frame with the same code the firmware uses, so there is nothing
+    /// new to decode downstream.
     /// </summary>
     [PluginName("Pith DDU Telemetry")]
     [PluginDescription("Forwards normalized telemetry to the Pith DDU dashboard / device.")]

@@ -5,6 +5,7 @@ pub mod firmware;
 pub mod race;
 pub mod shift;
 pub mod telemetry;
+pub mod udp;
 pub mod uidoc;
 
 use slint::{Color, ComponentHandle, ModelRc, SharedString, VecModel};

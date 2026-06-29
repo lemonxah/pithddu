@@ -40,6 +40,76 @@ The single source of truth for bindable telemetry fields is
 `firmware/main/field_registry.json`; both `pith-core` and the dashboard generate their
 field registries from it at build time (`build.rs`).
 
+## Telemetry sources & coverage
+
+Every source feeds the same positional `$`-frame (+ `@CM` car model / `@MAP` track)
+that the device parses. What each game can deliver is bounded by the transport it
+exposes on Linux — some games are UDP-only, some shared-memory-only, a few have both.
+
+**Legend** — how each field is gathered per title:
+`U` over the game's UDP feed · `S` from shared memory (via `pith-shim`/bridge or the
+native `/dev/shm` reader) · `U·S` available from both · `⚠` exposed by the title but
+**not yet wired** in our parser · `—` the title doesn't provide it at all · `*n` caveat.
+
+Columns: **Forza** · **F1** (Codemasters/EA) · **AMS2** (Automobilista 2 / Project CARS 2) ·
+**DiRT** (DiRT Rally / EA WRC) · **LFS** (LFS / BeamNG, OutGauge) · **GT7** (Gran Turismo 7/Sport) ·
+**ACC** · **AC** (Assetto Corsa) · **EVO** (AC EVO) · **rF2** (rFactor 2 / Le Mans Ultimate) ·
+**R3E** (RaceRoom).
+
+| Field | Forza | F1 | AMS2 | DiRT | LFS | GT7 | ACC | AC | EVO | rF2 | R3E |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| gear / speed | U | U | U | U | U | U | U·S | U·S | S | S | S |
+| rpm | U | U | U | U | U | U | S *2 | U·S | S | S | S |
+| max_rpm / shift_rpm | U | U | U | U | — | U | S | S | S | S | S |
+| throttle / brake | U | U | U | U | U | U | S *2 | U·S | S | S | S |
+| clutch | U | U | U | U | U | — | S *2 | U·S | S | S | S |
+| steer | U | U | U | U | — | — | S | U·S | S | S | ⚠ |
+| cur / last lap | U | U | ⚠ *7 | U *3 | — | U *3 | U *2 | U | ⚠ | ⚠ | S |
+| best lap | U | ⚠ *3 | ⚠ *7 | — *3 | — | U | U *2 | U | ⚠ | ⚠ | S |
+| pb / est lap | — *6b | — | — | — | — | — | — | — | — | — | — |
+| delta | — | — | — | — | — | — | U *2 | — | ⚠ | — | — |
+| sectors | — | ⚠ *3 | — | — | — | — | U *2 | — | — | ⚠ | — |
+| position | U | U | ⚠ *7 | U | — | — | U·S | U | ⚠ | ⚠ | S |
+| laps_done | U | U | ⚠ *7 | U | — | U | U·S | U | S | S | S |
+| field_size | — | ⚠ | — | — | — | — | S | — | — | ⚠ | — |
+| water_c | — | U | U | — | U | U | S | S | S | S | S |
+| oil_c | — | — | U | — | U | U | — | — | S | S | S |
+| oil_press | — | — | U | — | U | — | — | — | — | — | S |
+| boost | U | — | U | — | U | U | ⚠ | — | S | ⚠ | — |
+| tc / abs level | — | U | — | — | — | — | S | — | — | — | — |
+| brake_bias | — | U | — | — | — | — | S | — | — | ⚠ | — |
+| fuel level | — *4 | U | U | — | — *4 | U | S | S | S | S | S |
+| fuel capacity | — | U | U | — | — | U | ⚠ | S | S | S | S |
+| fuel/lap · laps-left | — *6 | — *6 | — *6 | — *6 | — *6 | — *6 | — *6 | — *6 | — *6 | — *6 | — *6 |
+| tyre temps | U | U | U | — | — | U | S | S | S | S | ⚠ |
+| tyre pressures | — | U | — | — | — | — | S | S | — | S | — |
+| tyre wear | ⚠ *8 | ⚠ | — | — | — | — | — *8 | — | — | — | — |
+| brake temps | — | U | — | — | — | — | S | S | — | S | — |
+| tc_active / abs_active | — | — | U *a | — | U | U *a | S | U·S | S | — | — |
+| ignition | U | U | U | — | U | U | S | U·S | S | S | — |
+| pit_limiter | — | U | U | — | U | — | S | S | S | S | S |
+| headlights | — | — | U | — | U | U | S | S | S | S | S |
+| wipers | — | — | — | — | — | — | S *5 | — *5 | ⚠ | — | — |
+| flag | — | ⚠ | — | — | — | — | S | — | ⚠ | ⚠ | — |
+| track map (pos/spline) | U | — | — | U | — | — | U·S | — | ⚠ | ⚠ | — |
+| car model `@CM` | ⚠ *1 | — | ⚠ *7 | — | — | ⚠ *1 | S *8b | U·S | S *8c | S | — *9 |
+| track name `@MAP` | — | ⚠ | ⚠ *7 | — | — | — | S *8b | U·S | S | S | ⚠ *9 |
+
+**Notes**
+- **\*1** Reported as a numeric **car ordinal/ID**, not a name → no car-library (LED-profile) match.
+- **\*2** ACC's UDP **broadcasting** feed has *no* RPM / pedals / tyres / fuel — those come only from shared memory; broadcasting supplies lap times / Δ / sectors / position / spline.
+- **\*3** Partial lap times: **F1** = current + last (best is in the session-history packet); **GT7** = best + last (no current); **DiRT** = current + last (no best).
+- **\*4** Fuel is a **0–1 tank fraction with no capacity** over this feed → can't convert to litres.
+- **\*5** **Wipers / lights / flag exist only in the shared-memory graphics page** — no UDP feed carries them. (Original-AC's graphics page predates `wiperLV`, so AC wipers = —.)
+- **\*6** **Derived, not transmitted:** fuel-per-lap & laps-left are computed from fuel deltas across laps (only SimHub fills them today). **\*6b** Forza/most don't send a personal-best/estimated lap.
+- **\*7** ⚠ **Reachable, wiring in progress:** the value is in a packet/page we don't yet parse — AMS2 *participants*/*timings* packets, ACC *graphics* lap times, rF2 *scoring* lap times/position/flag, R3E tyres/track string.
+- **\*8** Tyre wear: present but **not populated by ACC**; Forza only sends it in the Motorsport-2023 format. **\*8b** ACC car/track come from the shared-memory static page (the shim sends `@CM`/`@MAP`); the broadcasting feed's `carModelType` is a numeric enum needing a name table (planned). **\*8c** AC EVO offsets are community-reverse-engineered + early-access → fragile.
+- **\*9** RaceRoom car is a numeric **model-id** (needs the `r3e-data.json` map); its track name is a string (wiring planned).
+
+Bottom line: **shared-memory titles (ACC / AC / EVO / rF2-LMU / RaceRoom)** can reach
+near-full coverage via the in-prefix `pith-shm-bridge` tools; **UDP-only titles**
+(Forza, F1, GT7, DiRT, LFS/BeamNG) are capped at whatever the game broadcasts.
+
 ## Releases
 
 Independent release streams from this one repo, via tag prefixes:

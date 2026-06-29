@@ -1,17 +1,19 @@
 use slint::ComponentHandle;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::ctx::Ctx;
 use crate::games::detect_game;
 use crate::net::cardata::{auto_apply_car_model, prefetch_game_data};
 use crate::persist::{race_layout_from_json, save_race_layout};
+use crate::telemetry::decoders::try_decode;
+use crate::telemetry::frame_from_telem;
 use crate::ui_bridge::cars::{push_car_results, push_classes, rebuild_filtered};
 use crate::ui_bridge::firmware::{recompute_update_available, refresh_serial_ports};
 use crate::ui_bridge::telemetry::{apply_caps, apply_status, apply_telemetry};
 use crate::ui_bridge::{model, refresh_race, sstr};
-use crate::{AppState, CarLib, Firmware, FwComponent, RaceLayout, Telemetry};
+use crate::{AppState, CarLib, Firmware, FwComponent, RaceLayout, Telemetry, TelemetryUdp};
 
 pub fn try_connect(ctx: &Arc<Ctx>) -> bool {
     let mut d = ctx.dash();
@@ -33,104 +35,218 @@ pub fn dash_close(ctx: &Arc<Ctx>) {
     d.use_hid = false;
 }
 
-/// TCP receiver for the SimHub plugin (Phase 2): accept `$`-frames on
-/// 127.0.0.1:28909 and forward each to the device over HID. The device parses
-/// them into TELEM exactly like the old Custom Serial feed; the existing @T poll
-/// then mirrors that back into the dashboard preview, so the screen stays the
-/// single source of truth. Idle-cheap: non-blocking accept, blocking line reads.
-pub fn sim_listener_loop(ctx: Arc<Ctx>) {
-    use std::io::{BufRead, BufReader};
-    use std::net::TcpListener;
-
-    let listener = loop {
-        if !ctx.running.load(Ordering::SeqCst) {
-            return;
+/// Push one parsed `$`-frame to the device (~30 Hz) and the dashboard's own
+/// overview preview (~12 Hz). Shared by every telemetry source (SimHub text
+/// frames + decoded game packets + active connectors) so they all reach the
+/// device + preview identically. `line` must start with `$`.
+pub(crate) fn push_sim_frame(
+    ctx: &Arc<Ctx>,
+    line: &str,
+    last_push: &mut Instant,
+    last_preview: &mut Instant,
+) {
+    if ctx.ota_active.load(Ordering::SeqCst) {
+        return;
+    }
+    let now = Instant::now();
+    ctx.lock().last_sim_frame = Some(now);
+    // Push to the device (~30 Hz — smooth on the LCD, half the HID traffic of 60,
+    // and no @T round-trip back from the device).
+    if now.duration_since(*last_push) >= Duration::from_millis(33) {
+        *last_push = now;
+        let mut d = ctx.dash();
+        if d.connected() {
+            d.push_telemetry(line);
         }
-        match TcpListener::bind(("127.0.0.1", 28909)) {
-            Ok(l) => break l,
-            Err(_) => std::thread::sleep(Duration::from_secs(2)),
+    }
+    // Feed the dashboard's OWN overview directly (~12 Hz) — much smoother than the
+    // 6 Hz device_loop, capped so the rendered preview doesn't hog the UI thread.
+    if now.duration_since(*last_preview) >= Duration::from_millis(80) {
+        *last_preview = now;
+        let frame = line[1..].to_string();
+        let c2 = ctx.clone();
+        ctx.ui_run(move |u| {
+            let mut s = c2.lock();
+            u.global::<Telemetry>().set_connected(true);
+            apply_telemetry(&u, &mut s, &frame);
+        });
+    }
+}
+
+/// Handle one inbound SimHub text frame line (`$…`, `@CM…`, `@MAP…`). This is the
+/// exact path the TCP listener used, kept intact so the (UDP-updated) SimHub
+/// plugin still delivers the full field set, car model and track unchanged.
+fn handle_text_frame(
+    ctx: &Arc<Ctx>,
+    line: &str,
+    last_push: &mut Instant,
+    last_preview: &mut Instant,
+) {
+    let line = line.trim();
+    if line.is_empty() {
+        return;
+    }
+    if let Some(model) = line.strip_prefix("@CM") {
+        apply_car_model(ctx, model.trim());
+    } else if let Some(track) = line.strip_prefix("@MAP") {
+        apply_track(ctx, track.trim());
+    } else if line.starts_with('$') {
+        push_sim_frame(ctx, line, last_push, last_preview);
+    }
+}
+
+/// Apply a car model from any source: show it as the detected car, match the
+/// library, and push the per-car LED profile + shift scalars
+/// (`auto_apply_car_model` dedups on the model string, so calling it per-frame is
+/// cheap).
+fn apply_car_model(ctx: &Arc<Ctx>, model: &str) {
+    if model.is_empty() {
+        return;
+    }
+    {
+        let mut s = ctx.lock();
+        s.detected_model = model.to_string();
+        crate::net::cardata::auto_apply_car_model(ctx, &mut s, model);
+    }
+    let label = model.to_string();
+    ctx.ui_run(move |u| {
+        u.global::<CarLib>().set_detected_car(sstr(&label));
+    });
+}
+
+/// Apply a track name from any source: forget the old learned outline and relearn.
+fn apply_track(ctx: &Arc<Ctx>, track: &str) {
+    if track.is_empty() {
+        return;
+    }
+    let mut s = ctx.lock();
+    if s.map_learner.track != track {
+        s.map_learner.reset(track);
+        s.learned_map.clear();
+        s.map_pushed = false;
+        s.map_push_pending = false;
+    }
+}
+
+/// Reflect the running UDP server's status into the Telemetry-UDP page.
+fn push_udp_status(ctx: &Arc<Ctx>, bound: Option<u16>, packets: u64, pps: i32, source: &str) {
+    let source = source.to_string();
+    ctx.ui_run(move |u| {
+        let g = u.global::<TelemetryUdp>();
+        g.set_listening(bound.is_some());
+        g.set_bound_port(bound.map(|p| p as i32).unwrap_or(0));
+        g.set_packets(packets as i32);
+        g.set_pps(pps);
+        g.set_last_source(sstr(&source));
+    });
+}
+
+/// UDP telemetry receiver. Binds `0.0.0.0:<port>` and accepts two kinds of
+/// datagram on the same socket:
+///   * SimHub plugin text frames (`$…`, `@CM…`, `@MAP…`) — handled verbatim, so
+///     the full field set still flows;
+///   * native game telemetry (binary), run through the decoder registry
+///     (Forza Horizon 6 first) → a `$`-frame → the same device/preview path.
+/// The bind port is live-reconfigurable from the Telemetry-UDP page.
+pub fn udp_listener_loop(ctx: Arc<Ctx>) {
+    use std::net::UdpSocket;
+
+    let bind = |port: u16| -> Option<UdpSocket> {
+        match UdpSocket::bind(("0.0.0.0", port)) {
+            Ok(s) => {
+                let _ = s.set_read_timeout(Some(Duration::from_millis(250)));
+                Some(s)
+            }
+            Err(_) => None,
         }
     };
-    let _ = listener.set_nonblocking(true);
-    let mut last_push = std::time::Instant::now();
-    let mut last_preview = std::time::Instant::now();
+
+    let mut port = ctx.lock().udp_port;
+    let mut socket = bind(port);
+    if socket.is_none() {
+        push_udp_status(&ctx, None, 0, 0, "");
+    }
+
+    let mut buf = [0u8; 2048];
+    let mut last_push = Instant::now();
+    let mut last_preview = Instant::now();
+    let mut last_ident = Instant::now() - Duration::from_secs(1);
+    let mut last_stat = Instant::now();
+    let mut packets: u64 = 0;
+    let mut packets_at_stat: u64 = 0;
+    let mut source = String::new();
+    // A text sender can identify itself with an `@SRC<label>` line (the pith-shim
+    // does this); otherwise an un-tagged text feed is assumed to be the SimHub
+    // plugin. Tracked with a timestamp so it decays if the tagged sender stops.
+    let mut text_src: Option<(String, Instant)> = None;
 
     while ctx.running.load(Ordering::SeqCst) {
-        match listener.accept() {
-            Ok((stream, _)) => {
-                let _ = stream.set_nonblocking(false);
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                let reader = BufReader::new(stream);
-                for line in reader.lines() {
-                    if !ctx.running.load(Ordering::SeqCst) {
-                        return;
-                    }
-                    let line = match line {
-                        Ok(l) => l,
-                        Err(_) => break, // read timeout / disconnect: drop the client
-                    };
-                    let line = line.trim();
-                    if line.is_empty() {
-                        continue;
-                    }
-                    if let Some(model) = line.strip_prefix("@CM") {
-                        // Car model → show it as the detected car (unconditionally — the
-                        // @CM frame only arrives when SimHub has a car), match the
-                        // library, and push the per-car LED profile + shift scalars.
-                        let model = model.trim().to_string();
-                        if !model.is_empty() {
-                            {
-                                let mut s = ctx.lock();
-                                s.detected_model = model.clone();
-                                crate::net::cardata::auto_apply_car_model(&ctx, &mut s, &model);
+        // Live port change from the UI → rebind.
+        let want = ctx.lock().udp_port;
+        if want != port || socket.is_none() {
+            port = want;
+            socket = bind(port);
+            push_udp_status(&ctx, socket.as_ref().map(|_| port), packets, 0, &source);
+            if socket.is_none() {
+                std::thread::sleep(Duration::from_secs(1));
+                continue;
+            }
+        }
+        let sock = socket.as_ref().unwrap();
+
+        if let Ok((n, _addr)) = sock.recv_from(&mut buf) {
+            let data = &buf[..n];
+            // Dispatch by first non-space byte: '$'/'@' → SimHub text; else binary.
+            let first = data.iter().find(|b| !b.is_ascii_whitespace()).copied();
+            if matches!(first, Some(b'$') | Some(b'@')) {
+                if let Ok(text) = std::str::from_utf8(data) {
+                    let mut had_frame = false;
+                    for line in text.lines() {
+                        let l = line.trim();
+                        if let Some(src) = l.strip_prefix("@SRC") {
+                            // Sender self-identification (e.g. the pith-shim).
+                            text_src = Some((src.trim().to_string(), Instant::now()));
+                        } else {
+                            if l.starts_with('$') {
+                                had_frame = true;
                             }
-                            let label = model.clone();
-                            ctx.ui_run(move |u| {
-                                u.global::<CarLib>().set_detected_car(sstr(&label));
-                            });
+                            handle_text_frame(&ctx, line, &mut last_push, &mut last_preview);
                         }
-                    } else if let Some(track) = line.strip_prefix("@MAP") {
-                        // New track → forget the old learned outline and relearn.
-                        let track = track.trim().to_string();
-                        let mut s = ctx.lock();
-                        if s.map_learner.track != track {
-                            s.map_learner.reset(&track);
-                            s.learned_map.clear();
-                            s.map_pushed = false;
-                            s.map_push_pending = false;
-                        }
-                    } else if line.starts_with('$') && !ctx.ota_active.load(Ordering::SeqCst) {
-                        ctx.lock().last_sim_frame = Some(std::time::Instant::now());
-                        let now = std::time::Instant::now();
-                        // Push to the device (~30 Hz — smooth on the LCD, half the HID
-                        // traffic of 60, and no @T round-trip back from the device).
-                        if now.duration_since(last_push) >= Duration::from_millis(33) {
-                            last_push = now;
-                            let mut d = ctx.dash();
-                            if d.connected() {
-                                d.push_telemetry(line);
-                            }
-                        }
-                        // Feed the dashboard's OWN overview directly (~12 Hz) — much
-                        // smoother than the 6 Hz device_loop, capped so the rendered
-                        // preview image doesn't hog the UI thread.
-                        if now.duration_since(last_preview) >= Duration::from_millis(80) {
-                            last_preview = now;
-                            let frame = line[1..].to_string();
-                            let c2 = ctx.clone();
-                            ctx.ui_run(move |u| {
-                                let mut s = c2.lock();
-                                u.global::<Telemetry>().set_connected(true);
-                                apply_telemetry(&u, &mut s, &frame);
-                            });
-                        }
+                    }
+                    if had_frame {
+                        packets += 1;
+                        // Use the tagged source if it's fresh, else the SimHub plugin.
+                        source = match &text_src {
+                            Some((s, t)) if t.elapsed() < Duration::from_secs(3) => s.clone(),
+                            _ => "SimHub plugin".to_string(),
+                        };
                     }
                 }
+            } else if let Some((name, dec)) = try_decode(data) {
+                let frame = frame_from_telem(&dec.telem);
+                push_sim_frame(&ctx, &frame, &mut last_push, &mut last_preview);
+                packets += 1;
+                source = name.to_string();
+                // Surface the source game + (numeric) car identity ~1 Hz.
+                if last_ident.elapsed() >= Duration::from_secs(1) {
+                    last_ident = Instant::now();
+                    let car = dec.car.unwrap_or_default();
+                    ctx.ui_run(move |u| {
+                        let cl = u.global::<CarLib>();
+                        cl.set_detected_game(sstr(name));
+                        cl.set_detected_car(sstr(&car));
+                    });
+                }
             }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(200));
-            }
-            Err(_) => std::thread::sleep(Duration::from_millis(500)),
+        }
+
+        // Refresh the page's live status ~2 Hz.
+        if last_stat.elapsed() >= Duration::from_millis(500) {
+            let dt = last_stat.elapsed().as_secs_f64();
+            let pps = ((packets - packets_at_stat) as f64 / dt).round() as i32;
+            last_stat = Instant::now();
+            packets_at_stat = packets;
+            push_udp_status(&ctx, Some(port), packets, pps, &source);
         }
     }
 }
@@ -430,3 +546,381 @@ pub fn read_race_from_device(ctx: &Arc<Ctx>) {
         });
     });
 }
+
+// ============================ active connectors ============================
+// These reach out to a game (rather than passively listening on the shared UDP
+// port) and feed the same `$`-frame path as everything else.
+
+use crate::telemetry::acc;
+
+/// Set the Telemetry-UDP page's "source" label (throttled by the caller).
+fn set_udp_source(ctx: &Arc<Ctx>, src: &'static str) {
+    ctx.ui_run(move |u| u.global::<TelemetryUdp>().set_last_source(sstr(src)));
+}
+
+/// The sim-id of the currently process-detected game (from `game_loop`), or "".
+/// Lets a connector auto-activate only while its game is actually running.
+fn detected_sim(ctx: &Arc<Ctx>) -> String {
+    let s = ctx.lock();
+    if s.detected_game_idx >= 0 {
+        s.sims
+            .get(s.detected_game_idx as usize)
+            .map(|g| g.1.clone())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    }
+}
+
+/// Build a `$`-frame from one ACC car update. ACC carries no RPM/pedals/fuel, so
+/// those stay at idle — the dash, timing and track map work; shift lights don't.
+fn acc_frame(u: &acc::CarUpdate) -> String {
+    use pith_core::simhub::Telemetry;
+    let mut t = Telemetry::idle();
+    t.gear = crate::telemetry::le::gear_byte(u.gear);
+    t.speed_kmh = u.kmh;
+    t.position = u.position;
+    t.laps_done = u.laps;
+    t.delta_ms = u.delta_ms * 10; // ms → 0.1 ms units
+    t.cur_lap_ms = u.cur_ms;
+    t.last_lap_ms = u.last_ms;
+    t.best_lap_ms = u.best_ms;
+    t.track_pct = (u.spline * 1000.0).clamp(0.0, 1000.0) as i32;
+    t.pos_x = u.world_x.round() as i32;
+    t.pos_z = u.world_y.round() as i32;
+    t.s1_ms = u.sectors[0];
+    t.s2_ms = u.sectors[1];
+    t.s3_ms = u.sectors[2];
+    frame_from_telem(&t)
+}
+
+fn set_acc_status(ctx: &Arc<Ctx>, status: &'static str) {
+    ctx.ui_run(move |u| u.global::<TelemetryUdp>().set_acc_status(sstr(status)));
+}
+
+/// ACC "Broadcasting" client. When enabled on the Telemetry-UDP page, registers
+/// with the game (default 127.0.0.1:9000), streams the focused car's update, and
+/// feeds it to the device. Re-registers on silence; tears down on config change.
+pub fn acc_connector_loop(ctx: Arc<Ctx>) {
+    use std::net::UdpSocket;
+    let mut last_push = Instant::now();
+    let mut last_preview = Instant::now();
+
+    'outer: loop {
+        if !ctx.running.load(Ordering::SeqCst) {
+            return;
+        }
+        let (enabled, host, port, password) = {
+            let s = ctx.lock();
+            (s.acc_enabled, s.acc_host.clone(), s.acc_port, s.acc_password.clone())
+        };
+        // Only reach out while ACC is actually running (auto-detected) — no point
+        // spamming REGISTER at a dead port otherwise.
+        let running = detected_sim(&ctx) == "assettocorsacompetizione";
+        if !enabled || !running {
+            set_acc_status(&ctx, if !enabled { "Off" } else { "Waiting for ACC" });
+            std::thread::sleep(Duration::from_millis(500));
+            continue;
+        }
+        let sock = match UdpSocket::bind(("0.0.0.0", 0)) {
+            Ok(s) => s,
+            Err(_) => {
+                std::thread::sleep(Duration::from_secs(1));
+                continue;
+            }
+        };
+        let _ = sock.set_read_timeout(Some(Duration::from_millis(500)));
+        let reg = acc::encode_register("Pith DDU", &password, 250, "");
+        let _ = sock.send_to(&reg, (host.as_str(), port));
+        set_acc_status(&ctx, "Connecting…");
+
+        let mut conn_id: Option<i32> = None;
+        let mut focused: i32 = -1;
+        let mut last_register = Instant::now();
+        let mut last_rx = Instant::now();
+        let mut last_src = Instant::now() - Duration::from_secs(2);
+        let mut buf = [0u8; 2048];
+
+        loop {
+            if !ctx.running.load(Ordering::SeqCst) {
+                return;
+            }
+            // Config changed / disabled → unregister and restart from the top.
+            {
+                let s = ctx.lock();
+                if !s.acc_enabled
+                    || s.acc_host != host
+                    || s.acc_port != port
+                    || s.acc_password != password
+                {
+                    if let Some(id) = conn_id {
+                        let _ = sock.send_to(&acc::encode_request(acc::UNREGISTER, id), (host.as_str(), port));
+                    }
+                    continue 'outer;
+                }
+            }
+            if let Ok((n, _)) = sock.recv_from(&mut buf) {
+                last_rx = Instant::now();
+                if let Some(msg) = acc::parse(&buf[..n]) {
+                    match msg {
+                        acc::AccMsg::Registered { connection_id } => {
+                            conn_id = Some(connection_id);
+                            let _ = sock.send_to(
+                                &acc::encode_request(acc::REQUEST_ENTRY_LIST, connection_id),
+                                (host.as_str(), port),
+                            );
+                            let _ = sock.send_to(
+                                &acc::encode_request(acc::REQUEST_TRACK_DATA, connection_id),
+                                (host.as_str(), port),
+                            );
+                            set_acc_status(&ctx, "Connected");
+                        }
+                        acc::AccMsg::RegisterFailed => set_acc_status(&ctx, "Rejected — check password"),
+                        acc::AccMsg::Realtime { focused_car_index } => focused = focused_car_index,
+                        acc::AccMsg::Car(u) => {
+                            if focused < 0 || u.car_index == focused {
+                                let frame = acc_frame(&u);
+                                push_sim_frame(&ctx, &frame, &mut last_push, &mut last_preview);
+                                if last_src.elapsed() >= Duration::from_secs(1) {
+                                    last_src = Instant::now();
+                                    set_udp_source(&ctx, "ACC");
+                                }
+                            }
+                        }
+                        acc::AccMsg::Other => {}
+                    }
+                }
+            }
+            // No traffic for a while (or never registered) → (re)register.
+            if (conn_id.is_none() || last_rx.elapsed() > Duration::from_secs(3))
+                && last_register.elapsed() > Duration::from_secs(2)
+            {
+                last_register = Instant::now();
+                conn_id = None;
+                let _ = sock.send_to(&reg, (host.as_str(), port));
+            }
+        }
+    }
+}
+
+fn set_ac_status(ctx: &Arc<Ctx>, status: &'static str) {
+    ctx.ui_run(move |u| u.global::<TelemetryUdp>().set_ac_status(sstr(status)));
+}
+
+/// Assetto Corsa (original) handshake client. Auto-connects when AC is detected:
+/// handshakes on :9996, subscribes, then streams `RTCarInfo` → device. Has RPM,
+/// so shift-lights work (off the device's configured redline).
+pub fn ac_connector_loop(ctx: Arc<Ctx>) {
+    use crate::telemetry::ac;
+    use std::net::UdpSocket;
+    let mut last_push = Instant::now();
+    let mut last_preview = Instant::now();
+
+    'outer: loop {
+        if !ctx.running.load(Ordering::SeqCst) {
+            return;
+        }
+        let (enabled, host, port) = {
+            let s = ctx.lock();
+            (s.ac_enabled, s.ac_host.clone(), s.ac_port)
+        };
+        let running = detected_sim(&ctx) == "assettocorsa";
+        if !enabled || !running {
+            set_ac_status(&ctx, if !enabled { "Off" } else { "Waiting for AC" });
+            std::thread::sleep(Duration::from_millis(500));
+            continue;
+        }
+        let sock = match UdpSocket::bind(("0.0.0.0", 0)) {
+            Ok(s) => s,
+            Err(_) => {
+                std::thread::sleep(Duration::from_secs(1));
+                continue;
+            }
+        };
+        let _ = sock.set_read_timeout(Some(Duration::from_millis(500)));
+        let _ = sock.send_to(&ac::encode_op(ac::OP_HANDSHAKE), (host.as_str(), port));
+        set_ac_status(&ctx, "Connecting…");
+
+        let mut subscribed = false;
+        let mut last_handshake = Instant::now();
+        let mut last_rx = Instant::now();
+        let mut last_src = Instant::now() - Duration::from_secs(2);
+        let mut buf = [0u8; 1024];
+
+        loop {
+            if !ctx.running.load(Ordering::SeqCst) {
+                return;
+            }
+            {
+                let s = ctx.lock();
+                if !s.ac_enabled || s.ac_host != host || s.ac_port != port {
+                    let _ = sock.send_to(&ac::encode_op(ac::OP_DISMISS), (host.as_str(), port));
+                    continue 'outer;
+                }
+            }
+            if let Ok((n, _)) = sock.recv_from(&mut buf) {
+                last_rx = Instant::now();
+                let data = &buf[..n];
+                if ac::is_handshake_response(data) {
+                    let _ = sock.send_to(&ac::encode_op(ac::OP_SUBSCRIBE_UPDATE), (host.as_str(), port));
+                    subscribed = true;
+                    set_ac_status(&ctx, "Connected");
+                    // The handshake reply carries the car + track names.
+                    if let Some((car, track)) = ac::parse_handshake(data) {
+                        apply_car_model(&ctx, car.trim());
+                        apply_track(&ctx, track.trim());
+                    }
+                } else if let Some(t) = ac::parse_rtcarinfo(data) {
+                    let frame = frame_from_telem(&t);
+                    push_sim_frame(&ctx, &frame, &mut last_push, &mut last_preview);
+                    if last_src.elapsed() >= Duration::from_secs(1) {
+                        last_src = Instant::now();
+                        set_udp_source(&ctx, "Assetto Corsa");
+                    }
+                }
+            }
+            // Re-handshake if we never subscribed or the stream went quiet.
+            if (!subscribed || last_rx.elapsed() > Duration::from_secs(3))
+                && last_handshake.elapsed() > Duration::from_secs(2)
+            {
+                last_handshake = Instant::now();
+                subscribed = false;
+                let _ = sock.send_to(&ac::encode_op(ac::OP_HANDSHAKE), (host.as_str(), port));
+            }
+        }
+    }
+}
+
+fn set_gt7_status(ctx: &Arc<Ctx>, status: &'static str) {
+    ctx.ui_run(move |u| u.global::<TelemetryUdp>().set_gt7_status(sstr(status)));
+}
+
+/// Gran Turismo 7 client. Manual (the console pushes to us): sends the heartbeat
+/// to the PlayStation IP on :33739, receives Salsa20-encrypted packets on :33740,
+/// decrypts + parses → device. Has RPM + rev-limiter, so shift-lights work.
+pub fn gt7_connector_loop(ctx: Arc<Ctx>) {
+    use crate::telemetry::gt7;
+    use std::net::UdpSocket;
+    let mut last_push = Instant::now();
+    let mut last_preview = Instant::now();
+
+    'outer: loop {
+        if !ctx.running.load(Ordering::SeqCst) {
+            return;
+        }
+        let (enabled, host) = {
+            let s = ctx.lock();
+            (s.gt7_enabled, s.gt7_host.clone())
+        };
+        if !enabled || host.trim().is_empty() {
+            set_gt7_status(&ctx, if !enabled { "Off" } else { "Set console IP" });
+            std::thread::sleep(Duration::from_millis(500));
+            continue;
+        }
+        let sock = match UdpSocket::bind(("0.0.0.0", gt7::RECV_PORT)) {
+            Ok(s) => s,
+            Err(_) => {
+                set_gt7_status(&ctx, "Port 33740 busy");
+                std::thread::sleep(Duration::from_secs(2));
+                continue;
+            }
+        };
+        let _ = sock.set_read_timeout(Some(Duration::from_millis(500)));
+        let _ = sock.send_to(gt7::HEARTBEAT, (host.as_str(), gt7::SEND_PORT));
+        set_gt7_status(&ctx, "Connecting…");
+
+        let mut pkts: u32 = 0;
+        let mut last_src = Instant::now() - Duration::from_secs(2);
+        let mut last_rx = Instant::now();
+        let mut buf = [0u8; 2048];
+
+        loop {
+            if !ctx.running.load(Ordering::SeqCst) {
+                return;
+            }
+            {
+                let s = ctx.lock();
+                if !s.gt7_enabled || s.gt7_host != host {
+                    continue 'outer;
+                }
+            }
+            if let Ok((n, _)) = sock.recv_from(&mut buf) {
+                last_rx = Instant::now();
+                if let Some(pt) = gt7::decrypt(&buf[..n]) {
+                    if let Some(t) = gt7::parse(&pt) {
+                        let frame = frame_from_telem(&t);
+                        push_sim_frame(&ctx, &frame, &mut last_push, &mut last_preview);
+                        set_gt7_status(&ctx, "Connected");
+                        if last_src.elapsed() >= Duration::from_secs(1) {
+                            last_src = Instant::now();
+                            set_udp_source(&ctx, "Gran Turismo 7");
+                        }
+                    }
+                }
+                pkts += 1;
+                // GT7 stops after ~100 packets unless re-fed; resend the heartbeat.
+                if pkts % 100 == 0 {
+                    let _ = sock.send_to(gt7::HEARTBEAT, (host.as_str(), gt7::SEND_PORT));
+                }
+            } else if last_rx.elapsed() > Duration::from_secs(2) {
+                // No data: keep prodding the console.
+                let _ = sock.send_to(gt7::HEARTBEAT, (host.as_str(), gt7::SEND_PORT));
+                set_gt7_status(&ctx, "Waiting for GT7…");
+            }
+        }
+    }
+}
+
+fn set_shm_status(ctx: &Arc<Ctx>, status: &'static str) {
+    ctx.ui_run(move |u| u.global::<TelemetryUdp>().set_shm_status(sstr(status)));
+}
+
+/// Native shared-memory reader (Linux). Scans `/dev/shm` for a known sim block
+/// (exposed there by an in-prefix bridge like simshmbridge), reads + parses it
+/// → device. This is how ACC gets RPM/shift-lights natively, no SimHub/plugin.
+#[cfg(target_os = "linux")]
+pub fn shm_reader_loop(ctx: Arc<Ctx>) {
+    use crate::telemetry::shm;
+    let mut last_push = Instant::now();
+    let mut last_preview = Instant::now();
+    let mut last_src = Instant::now() - Duration::from_secs(2);
+    let mut missing_since = Instant::now();
+
+    while ctx.running.load(Ordering::SeqCst) {
+        if !ctx.lock().shm_enabled {
+            set_shm_status(&ctx, "Off");
+            std::thread::sleep(Duration::from_millis(500));
+            continue;
+        }
+        match shm::read_once() {
+            Some(r) => {
+                let frame = frame_from_telem(&r.telem);
+                push_sim_frame(&ctx, &frame, &mut last_push, &mut last_preview);
+                if last_src.elapsed() >= Duration::from_secs(1) {
+                    last_src = Instant::now();
+                    set_shm_status(&ctx, "Reading");
+                    set_udp_source(&ctx, r.label);
+                    // Car/track drive the library LED match + self-learned map.
+                    if let Some(car) = r.car.as_deref() {
+                        apply_car_model(&ctx, car);
+                    }
+                    if let Some(track) = r.track.as_deref() {
+                        apply_track(&ctx, track);
+                    }
+                }
+                missing_since = Instant::now();
+                std::thread::sleep(Duration::from_millis(20)); // ~50 Hz
+            }
+            None => {
+                if missing_since.elapsed() > Duration::from_secs(1) {
+                    set_shm_status(&ctx, "No /dev/shm block (run a bridge)");
+                }
+                std::thread::sleep(Duration::from_millis(400));
+            }
+        }
+    }
+}
+
+/// No shared-memory reader off Linux (Windows/macOS use the native SDKs).
+#[cfg(not(target_os = "linux"))]
+pub fn shm_reader_loop(_ctx: Arc<Ctx>) {}

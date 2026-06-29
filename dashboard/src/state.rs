@@ -256,6 +256,20 @@ pub struct State {
 
 
     pub device_log: Vec<String>, // firmware logs streamed over HID report id 3
+
+    pub udp_port: u16, // UDP telemetry server port (SimHub plugin + direct game decoders)
+
+    // Active connectors (we reach out to the game rather than just listening).
+    pub acc_enabled: bool,
+    pub acc_host: String,
+    pub acc_port: u16,
+    pub acc_password: String,
+    pub ac_enabled: bool,
+    pub ac_host: String,
+    pub ac_port: u16,
+    pub gt7_enabled: bool,
+    pub gt7_host: String, // PlayStation IP (GT7 streams from the console)
+    pub shm_enabled: bool, // read AC/ACC shared memory from /dev/shm (needs a bridge)
 }
 
 impl Default for State {
@@ -337,6 +351,17 @@ impl Default for State {
             serial_ports: Vec::new(),
             releases: Vec::new(),
             device_log: Vec::new(),
+            udp_port: 28909,
+            acc_enabled: false,
+            acc_host: "127.0.0.1".to_string(),
+            acc_port: 9000,
+            acc_password: "asd".to_string(),
+            ac_enabled: false,
+            ac_host: "127.0.0.1".to_string(),
+            ac_port: 9996,
+            gt7_enabled: false,
+            gt7_host: String::new(),
+            shm_enabled: true,
         }
     }
 }

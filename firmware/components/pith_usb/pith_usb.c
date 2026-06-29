@@ -150,10 +150,22 @@ uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance) {
     return s_hid_report;
 }
 
+// Last joystick (report id 1) button mask we sent, so a host GET_REPORT poll
+// returns the real current state. DirectInput polls this on the controller bind
+// screen; returning 0 here made it read a stale buffer → a phantom stuck button.
+static volatile uint32_t s_joy_mask = 0;
+
 uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id,
                                hid_report_type_t report_type,
                                uint8_t *buffer, uint16_t reqlen) {
-    (void)instance; (void)report_id; (void)report_type; (void)buffer; (void)reqlen;
+    (void)instance;
+    // Joystick input report: answer with the live 4-byte button mask (LE).
+    if (report_id == 1 && report_type == HID_REPORT_TYPE_INPUT) {
+        uint8_t n = reqlen < 4 ? (uint8_t)reqlen : 4;
+        uint32_t m = s_joy_mask;
+        for (uint8_t i = 0; i < n; i++) buffer[i] = (uint8_t)(m >> (8 * i));
+        return n;
+    }
     return 0;
 }
 
@@ -194,6 +206,12 @@ bool pith_hid_ready(void) { return tud_hid_ready(); }
 
 bool pith_hid_send(uint8_t report_id, const void *data, int len) {
     if (len < 0) return false;
+    // Cache the joystick mask so GET_REPORT can answer with the current state.
+    if (report_id == 1 && len >= 4 && data) {
+        const uint8_t *b = (const uint8_t *)data;
+        s_joy_mask = (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
+                     ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+    }
     return tud_hid_report(report_id, data, (uint16_t)len);
 }
 

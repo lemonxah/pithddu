@@ -1,11 +1,12 @@
 # Pith DDU — SimHub plugin
 
-Streams SimHub's normalized telemetry to the **Pith DDU dashboard** over TCP. It
-emits the exact same `$`-frame the firmware already parses
-(`pith_core::simhub::parse_line`), so nothing downstream needs to change.
+Streams SimHub's normalized telemetry to the **Pith DDU dashboard** over UDP (one
+datagram per frame). It emits the exact same `$`-frame the firmware already parses
+(`pith_core::simhub::parse_line`), so nothing downstream needs to change. Set the
+**Port** to match the dashboard's **Telemetry UDP** page (default `28909`).
 
 ```
-SimHub ──[this plugin]── "$g;speed;rpm;…\n" ──► dashboard (TCP :28909) ──► device
+SimHub ──[this plugin]── "$g;speed;rpm;…" ──► dashboard (UDP :28909) ──► device
 ```
 
 ## Why a plugin instead of "Custom Serial"
@@ -87,8 +88,10 @@ Units are noted inline in `FrameBuilder.cs` (x10 = tenths, dl = decilitres,
 ml = millilitres, delta = 0.1 ms units). Loosely-mapped fields (boost, sectors,
 car position, steer) are safe to leave at 0 — the device just shows them empty.
 
-## Next (dashboard side)
+## Dashboard side
 
-The dashboard needs a small TCP listener on `:28909` that feeds each received
-line into the existing telemetry path (`apply_telemetry`) and relays it to the
-device. That's the Phase-2 change — see the repo's SimHub-plugin plan.
+The dashboard runs a UDP telemetry server (the **Telemetry UDP** page) that
+accepts these datagrams, feeds each line into the existing telemetry path
+(`apply_telemetry`) and relays it to the device. The same socket also decodes
+some games' native telemetry directly (e.g. Forza Horizon 6's "Data Out"), so
+this plugin is only needed for games without a built-in decoder.

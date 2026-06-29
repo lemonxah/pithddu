@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+#
+# pith-shim-run — Steam launch-options wrapper for the Pith DDU shm tools.
+#
+# Runs pith-shim.exe (or pith-shmbridge.exe) INSIDE the game's Proton container —
+# the same wineserver as the game — so it can read the sim's shared memory, then
+# launches the game normally. No Steam Tinker Launch needed.
+#
+# SETUP
+#   1. Build the tools (see README.md) and copy the exe somewhere stable, e.g.:
+#        mkdir -p ~/pith && cp target/x86_64-pc-windows-gnu/release/pith-shim.exe ~/pith/
+#   2. Make this script executable:   chmod +x pith-shim-run
+#   3. Steam → the game → Properties → Launch Options:
+#        /full/path/to/pith-shim-run %command%
+#      (override defaults inline, e.g.:  PITH_PORT=5005 /path/pith-shim-run %command% )
+#   4. Launch the game. Watch ~/pith/pith-shim-run.log for status.
+#
+# It works by enabling Proton's "launcher service" (STEAM_COMPAT_LAUNCHER_SERVICE)
+# and injecting the exe with steam-runtime-launch-client — the same mechanism
+# Steam Tinker Launch uses under the hood.
+#
+# --- config (all overridable via env in the Launch Options) -------------------
+PITH_SHIM="${PITH_SHIM:-$HOME/pith/pith-shim.exe}"          # exe to inject
+PITH_BRIDGE_EXE="${PITH_BRIDGE_EXE:-$HOME/pith/pith-shmbridge.exe}"
+PITH_HOST="${PITH_HOST:-127.0.0.1}"                         # dashboard IP (shim only)
+PITH_PORT="${PITH_PORT:-28909}"                             # dashboard UDP port (shim only)
+PITH_BRIDGE="${PITH_BRIDGE:-0}"                             # 1 = run the bridge instead of the shim
+PITH_WINE="${PITH_WINE:-wine}"                              # wine on the container PATH
+PITH_LAUNCH_CLIENT="${PITH_LAUNCH_CLIENT:-steam-runtime-launch-client}"  # ships with the Steam runtime
+PITH_LOG="${PITH_LOG:-$HOME/pith/pith-shim-run.log}"
+# Extra Windows programs to also run inside the game's prefix, ';'-separated. Each
+# entry is an exe path (+ optional args), launched with wine. Use this to start
+# companions like lmuFFB alongside the game, e.g.:
+#   PITH_EXTRA="$HOME/lmu/lmuFFB.exe" /path/pith-shim-run %command%
+# (Paths must not contain spaces — symlink to a space-free path if they do.)
+PITH_EXTRA="${PITH_EXTRA:-}"
+# -----------------------------------------------------------------------------
+
+mkdir -p "$(dirname "$PITH_LOG")"
+log() { echo "[pith $(date '+%H:%M:%S')] $*" >>"$PITH_LOG"; }
+
+# Build the list of in-container commands to inject (each: "wine <path> [args]").
+inject_list=()
+if [ "$PITH_BRIDGE" = "1" ]; then
+    [ -f "$PITH_BRIDGE_EXE" ] && inject_list+=("$PITH_WINE $PITH_BRIDGE_EXE")
+else
+    [ -f "$PITH_SHIM" ] && inject_list+=("$PITH_WINE $PITH_SHIM $PITH_HOST $PITH_PORT")
+fi
+if [ -n "$PITH_EXTRA" ]; then
+    _oifs=$IFS; IFS=';'
+    for _p in $PITH_EXTRA; do
+        _p="${_p#"${_p%%[![:space:]]*}"}"; _p="${_p%"${_p##*[![:space:]]}"}" # trim
+        [ -n "$_p" ] && inject_list+=("$PITH_WINE $_p")
+    done
+    IFS=$_oifs
+fi
+
+log "start: bridge=$PITH_BRIDGE host=$PITH_HOST port=$PITH_PORT extra=[$PITH_EXTRA]"
+
+# Ask pressure-vessel to expose a launcher service inside the game's container.
+export STEAM_COMPAT_LAUNCHER_SERVICE=proton
+
+if [ ${#inject_list[@]} -gt 0 ]; then
+    (
+        # Wait (up to ~90 s) for this app's launcher service to come up.
+        bus=""
+        for _ in $(seq 1 90); do
+            bus=$("$PITH_LAUNCH_CLIENT" --list 2>>"$PITH_LOG" \
+                  | grep -oEm1 'com\.steampowered\.App[0-9]+') && [ -n "$bus" ] && break
+            sleep 1
+        done
+        if [ -z "$bus" ]; then
+            log "ERROR: launcher service never appeared. Is '$PITH_LAUNCH_CLIENT' on PATH and does this Proton support STEAM_COMPAT_LAUNCHER_SERVICE?"
+            exit 0
+        fi
+        # Inject each program with its own launch-client (backgrounded so the
+        # long-running companions all coexist for the game's lifetime). wine takes
+        # the exe's Unix path — the host filesystem is visible in the container.
+        for cmd in "${inject_list[@]}"; do
+            log "injecting into $bus → $cmd"
+            # shellcheck disable=SC2086  # intentional word-split: pass path + args
+            "$PITH_LAUNCH_CLIENT" --bus-name="$bus" -- $cmd >>"$PITH_LOG" 2>&1 &
+        done
+        wait
+        log "injector exited"
+    ) &
+else
+    log "ERROR: nothing to inject (shim exe missing? set PITH_SHIM / PITH_EXTRA)"
+fi
+
+# Launch the game exactly as Steam intended.
+exec "$@"

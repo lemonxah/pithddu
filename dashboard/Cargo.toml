@@ -27,6 +27,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 flate2 = "1"
 tar = "0.4"
+# GT7 telemetry datagrams are Salsa20-encrypted.
+salsa20 = "0.10"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

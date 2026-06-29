@@ -1,0 +1,34 @@
+# In-prefix shared-memory tools for the Pith DDU (Windows / Proton-Wine).
+#
+# Two tiny binaries that run INSIDE a sim's Proton/Wine prefix:
+#   * pith-shim       — read the sim's shared memory, send our $-frame over UDP
+#                       to the dashboard's Telemetry-UDP server (no /dev/shm,
+#                       no SimHub). The simplest "native ACC RPM" path.
+#   * pith-shmbridge  — copy the sim's shared memory to a real /dev/shm file
+#                       (via Wine's Z:\dev\shm) so the dashboard's native reader
+#                       picks it up.
+#
+# Excluded from the host workspace (it only builds for Windows). Build with:
+#   cd pith-shm-bridge && cargo build --release --target x86_64-pc-windows-gnu
+# then run the resulting .exe inside the game's prefix (see README.md).
+[package]
+name = "pith-shm-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "In-prefix shared-memory → UDP/dev-shm tools for the Pith DDU dashboard"
+license = "BSD-3-Clause"
+
+[dependencies]
+# Reuse the dashboard's verified struct parsers + $-frame serializer.
+pith-core = { path = "../pith-core" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Memory"] }
+
+[[bin]]
+name = "pith-shim"
+path = "src/bin/pith-shim.rs"
+
+[[bin]]
+name = "pith-shmbridge"
+path = "src/bin/pith-shmbridge.rs"

@@ -2,6 +2,7 @@
 //! Touch widgets call pulse()/set(); a task pushes a joystick report (id 1) via
 //! the pith_usb shim whenever the button mask changes. Port of hid_gamepad.c.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
@@ -9,6 +10,11 @@ use std::time::Duration;
 use esp_idf_svc::sys;
 
 const N: usize = 32;
+
+// Whether the host has received our baseline (all-buttons-released) report since
+// the last (re)connect. Without it the joystick never reports at boot — leaving
+// some hosts/games (Forza via DirectInput) reading a phantom stuck button.
+static BASELINE_SENT: AtomicBool = AtomicBool::new(false);
 const PULSE_MS: i64 = 60; // how long a tapped button stays "pressed"
 
 struct Gamepad {
@@ -51,8 +57,15 @@ pub fn set(btn: usize, pressed: bool) {
     p.release_us[btn] = 0; // explicit control cancels any pulse timer
 }
 
-/// Service pulse timers and push a report when the mask changed.
+/// Service pulse timers and push a report when the mask changed (or to establish
+/// the post-connect baseline).
 fn service() {
+    // Not enumerated yet: arm the baseline so we re-send once after (re)connect.
+    if !unsafe { sys::pith_hid_ready() } {
+        BASELINE_SENT.store(false, Ordering::Relaxed);
+        return;
+    }
+    let need_baseline = !BASELINE_SENT.load(Ordering::Relaxed);
     let mask = {
         let mut p = PAD.lock().unwrap();
         let now = now_us();
@@ -62,19 +75,19 @@ fn service() {
                 p.release_us[i] = 0;
             }
         }
-        if p.mask == p.sent {
+        // Send when the mask changed, OR once after connect to publish the
+        // all-released baseline (so the host never reads a phantom button).
+        if p.mask == p.sent && !need_baseline {
             return;
         }
         p.mask
     };
-    if !unsafe { sys::pith_hid_ready() } {
-        return;
-    }
     let bytes = mask.to_le_bytes();
     if unsafe {
         sys::pith_hid_send(1, bytes.as_ptr() as *const core::ffi::c_void, bytes.len() as i32)
     } {
         PAD.lock().unwrap().sent = mask;
+        BASELINE_SENT.store(true, Ordering::Relaxed);
     }
 }
 

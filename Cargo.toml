@@ -8,7 +8,9 @@
 [workspace]
 resolver = "2"
 members = ["dashboard", "pith-core", "pith-ui", "pith-device", "pith-flash"]
-exclude = ["firmware"]
+# firmware: separate esp toolchain. pith-shm-bridge: Windows-only (Proton-Wine
+# in-prefix tools), built with `--target x86_64-pc-windows-gnu`.
+exclude = ["firmware", "pith-shm-bridge"]
 
 [profile.release]
 opt-level = 2

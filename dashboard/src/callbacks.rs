@@ -18,6 +18,7 @@ use crate::ui_bridge::{refresh_race, sstr, to_u32};
 use crate::util::atoi;
 use crate::{
     AppState, AppWindow, Buttons, CarLib, DeviceCfg, DeviceLog, Firmware, RaceLayout, ShiftCfg,
+    TelemetryUdp,
 };
 
 fn mark_dirty(u: &AppWindow, s: &State) {
@@ -182,6 +183,55 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
             } else {
                 let _ = slint::quit_event_loop();
             }
+        });
+    }
+
+    {
+        // Telemetry-UDP page: change the listen port → persist + re-push config.
+        // The udp_listener_loop watches state.udp_port and rebinds on its own.
+        let c = ctx.clone();
+        ui.global::<TelemetryUdp>().on_set_port(move |p| {
+            let port = p.clamp(1, 65535) as u16;
+            {
+                let mut s = c.lock();
+                s.udp_port = port;
+                save_udp_cfg(&s);
+            }
+            if let Some(u) = c.ui.upgrade() {
+                crate::ui_bridge::udp::push_udp_cfg(&u, &c.lock());
+            }
+        });
+        // Active-connector config (the loops watch state and react live).
+        let c = ctx.clone();
+        ui.global::<TelemetryUdp>()
+            .on_set_acc(move |on, host, port, pw| {
+                let mut s = c.lock();
+                s.acc_enabled = on;
+                s.acc_host = host.to_string();
+                s.acc_port = (port.clamp(1, 65535)) as u16;
+                s.acc_password = pw.to_string();
+                save_udp_cfg(&s);
+            });
+        let c = ctx.clone();
+        ui.global::<TelemetryUdp>().on_set_ac(move |on, host, port| {
+            let mut s = c.lock();
+            s.ac_enabled = on;
+            s.ac_host = host.to_string();
+            s.ac_port = (port.clamp(1, 65535)) as u16;
+            save_udp_cfg(&s);
+        });
+        let c = ctx.clone();
+        ui.global::<TelemetryUdp>().on_set_gt7(move |on, host| {
+            let mut s = c.lock();
+            s.gt7_enabled = on;
+            s.gt7_host = host.to_string();
+            save_udp_cfg(&s);
+        });
+        let c = ctx.clone();
+        ui.global::<TelemetryUdp>().on_set_shm(move |on| {
+            let mut s = c.lock();
+            s.shm_enabled = on;
+            save_udp_cfg(&s);
         });
     }
 

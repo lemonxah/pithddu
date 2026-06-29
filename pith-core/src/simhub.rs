@@ -116,6 +116,93 @@ impl Telemetry {
             ..Default::default()
         }
     }
+
+    /// Serialize into one canonical `$`-frame line (no trailing newline) — the
+    /// exact inverse of [`parse_line`], in the positional order the firmware
+    /// parses. Lets a decoded game/shared-memory snapshot ride the identical
+    /// path to the device as a native SimHub text frame.
+    pub fn to_frame(&self) -> String {
+        use core::fmt::Write;
+        let mut s = String::with_capacity(320);
+        s.push('$');
+        s.push(self.gear as char);
+        macro_rules! a {
+            ($v:expr) => {{
+                let _ = write!(s, ";{}", $v);
+            }};
+        }
+        a!(self.speed_kmh);
+        a!(self.rpm);
+        a!(self.max_rpm);
+        a!(self.shift_rpm);
+        a!(self.cur_lap_ms);
+        a!(self.last_lap_ms);
+        a!(self.best_lap_ms);
+        a!(self.pb_lap_ms);
+        a!(self.est_lap_ms);
+        a!(self.delta_ms);
+        a!(self.position);
+        a!(self.field_size);
+        a!(self.laps_done);
+        a!(self.total_laps);
+        a!(self.laps_left);
+        a!(self.water_c);
+        a!(self.oil_c);
+        a!(self.oil_press_x10);
+        a!(self.boost_kpa);
+        a!(self.tc);
+        a!(self.abs);
+        a!(self.brake_bias_x10);
+        a!(self.fuel_dl);
+        a!(self.fuel_cap_dl);
+        a!(self.fuel_per_lap_ml);
+        a!(self.fuel_laps_x10);
+        a!(self.tt_fl_i);
+        a!(self.tt_fl_m);
+        a!(self.tt_fl_o);
+        a!(self.tt_fr_i);
+        a!(self.tt_fr_m);
+        a!(self.tt_fr_o);
+        a!(self.tt_rl_i);
+        a!(self.tt_rl_m);
+        a!(self.tt_rl_o);
+        a!(self.tt_rr_i);
+        a!(self.tt_rr_m);
+        a!(self.tt_rr_o);
+        a!(self.tp_fl);
+        a!(self.tp_fr);
+        a!(self.tp_rl);
+        a!(self.tp_rr);
+        a!(self.tw_fl);
+        a!(self.tw_fr);
+        a!(self.tw_rl);
+        a!(self.tw_rr);
+        a!(self.bt_fl);
+        a!(self.bt_fr);
+        a!(self.bt_rl);
+        a!(self.bt_rr);
+        a!(self.throttle);
+        a!(self.brake);
+        a!(self.clutch);
+        a!(self.steer);
+        a!(self.tc_active);
+        a!(self.abs_active);
+        a!(self.headlights);
+        a!(self.wipers);
+        a!(self.pit_limiter);
+        a!(self.ignition);
+        a!(self.flag);
+        a!(self.track_pct);
+        a!(self.pos_x);
+        a!(self.pos_z);
+        a!(self.s1_ms);
+        a!(self.s2_ms);
+        a!(self.s3_ms);
+        a!(self.bs1_ms);
+        a!(self.bs2_ms);
+        a!(self.bs3_ms);
+        s
+    }
 }
 
 /// Byte cursor over the frame.

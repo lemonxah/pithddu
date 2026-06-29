@@ -5,7 +5,8 @@ namespace PithDdu.SimHubPlugin
     {
         public bool Enabled { get; set; } = true;
 
-        // TCP transport — the dashboard receiver listens here.
+        // UDP transport — the dashboard's UDP telemetry server listens here.
+        // Match this port to the dashboard's "Telemetry UDP" page.
         public string Host { get; set; } = "127.0.0.1";
         public int Port { get; set; } = 28909;
 
