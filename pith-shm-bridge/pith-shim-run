@@ -7,27 +7,34 @@
 # launches the game normally. No Steam Tinker Launch needed.
 #
 # SETUP
-#   1. Build the tools (see README.md) and copy the exe somewhere stable, e.g.:
-#        mkdir -p ~/pith && cp target/x86_64-pc-windows-gnu/release/pith-shim.exe ~/pith/
-#   2. Make this script executable:   chmod +x pith-shim-run
-#   3. Steam → the game → Properties → Launch Options:
-#        /full/path/to/pith-shim-run %command%
-#      (override defaults inline, e.g.:  PITH_PORT=5005 /path/pith-shim-run %command% )
-#   4. Launch the game. Watch ~/pith/pith-shim-run.log for status.
+#   1. Install the tools + this wrapper:   just shm-tools install
+#      (.exe → ~/.local/share/pithddu/ ; this script → ~/.local/bin/pith-shim-run)
+#   2. Steam → the game → Properties → Launch Options:
+#        pith-shim-run %command%        (it's on PATH after install)
+#      (override defaults inline, e.g.:  PITH_PORT=5005 pith-shim-run %command% )
+#   3. Launch the game. Watch ~/.local/state/pithddu/pith-shim-run.log for status.
 #
 # It works by enabling Proton's "launcher service" (STEAM_COMPAT_LAUNCHER_SERVICE)
 # and injecting the exe with steam-runtime-launch-client — the same mechanism
 # Steam Tinker Launch uses under the hood.
 #
 # --- config (all overridable via env in the Launch Options) -------------------
-PITH_SHIM="${PITH_SHIM:-$HOME/pith/pith-shim.exe}"          # exe to inject
-PITH_BRIDGE_EXE="${PITH_BRIDGE_EXE:-$HOME/pith/pith-shmbridge.exe}"
+# Find the .exe files: user install (`just shm-tools install` → XDG data dir) or
+# the system AUR package (/usr/share/pithddu). Override with PITH_DIR or PITH_SHIM.
+if [ -z "${PITH_DIR:-}" ]; then
+    for _d in "${XDG_DATA_HOME:-$HOME/.local/share}/pithddu" /usr/share/pithddu /usr/lib/pithddu; do
+        [ -f "$_d/pith-shim.exe" ] && { PITH_DIR="$_d"; break; }
+    done
+    : "${PITH_DIR:=${XDG_DATA_HOME:-$HOME/.local/share}/pithddu}"
+fi
+PITH_SHIM="${PITH_SHIM:-$PITH_DIR/pith-shim.exe}"          # exe to inject
+PITH_BRIDGE_EXE="${PITH_BRIDGE_EXE:-$PITH_DIR/pith-shmbridge.exe}"
 PITH_HOST="${PITH_HOST:-127.0.0.1}"                         # dashboard IP (shim only)
 PITH_PORT="${PITH_PORT:-28909}"                             # dashboard UDP port (shim only)
 PITH_BRIDGE="${PITH_BRIDGE:-0}"                             # 1 = run the bridge instead of the shim
 PITH_WINE="${PITH_WINE:-wine}"                              # wine on the container PATH
 PITH_LAUNCH_CLIENT="${PITH_LAUNCH_CLIENT:-steam-runtime-launch-client}"  # ships with the Steam runtime
-PITH_LOG="${PITH_LOG:-$HOME/pith/pith-shim-run.log}"
+PITH_LOG="${PITH_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/pithddu/pith-shim-run.log}"
 # Extra Windows programs to also run inside the game's prefix, ';'-separated. Each
 # entry is an exe path (+ optional args), launched with wine. Use this to start
 # companions like lmuFFB alongside the game, e.g.:

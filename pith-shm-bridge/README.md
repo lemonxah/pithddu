@@ -42,18 +42,19 @@ see the memory — so use one of these:
 This wrapper injects the exe into the game's own container via Proton's launcher
 service. One-time setup:
 ```bash
-mkdir -p ~/pith
-cp target/x86_64-pc-windows-gnu/release/pith-shim.exe ~/pith/
-cp target/x86_64-pc-windows-gnu/release/pith-shmbridge.exe ~/pith/   # optional
-chmod +x pith-shim-run
+just shm-tools install   # .exe → ~/.local/share/pithddu/ ; pith-shim-run → ~/.local/bin/
 ```
-Steam → the game → **Properties → Launch Options**:
+(Or install the `pithddu-dashboard-bin` AUR package — it ships the .exe in
+`/usr/share/pithddu/` and `pith-shim-run` in `/usr/bin/`. The wrapper searches both
+the user and system locations automatically.)
+
+Steam → the game → **Properties → Launch Options** (`pith-shim-run` is on PATH):
 ```
-/full/path/to/pith-shm-bridge/pith-shim-run %command%
+pith-shim-run %command%
 ```
-Launch the game; check `~/pith/pith-shim-run.log`. Override defaults inline, e.g.
-`PITH_PORT=5005 /path/pith-shim-run %command%`, or `PITH_BRIDGE=1 …` to run the
-bridge instead of the shim. (Needs `steam-runtime-launch-client` from the Steam
+Launch the game; check `~/.local/state/pithddu/pith-shim-run.log`. Override defaults
+inline, e.g. `PITH_PORT=5005 pith-shim-run %command%`, or `PITH_BRIDGE=1 …` to run
+the bridge instead of the shim. (Needs `steam-runtime-launch-client` from the Steam
 runtime on PATH; set `PITH_LAUNCH_CLIENT=/full/path` if it isn't.)
 
 **Running extra companion exes in the same prefix** (e.g. `lmuFFB` with Le Mans
@@ -72,7 +73,7 @@ steam-runtime-launch-client --bus-name=com.steampowered.App<APPID> -- wine /path
 
 No pressure-vessel, so just run it in the same prefix (a pre-launch script works):
 ```bash
-WINEPREFIX="/path/to/game/prefix" wine ~/pith/pith-shim.exe 127.0.0.1 28909
+WINEPREFIX="/path/to/game/prefix" wine ~/.local/share/pithddu/pith-shim.exe 127.0.0.1 28909
 ```
 
 ### Steam Tinker Launch

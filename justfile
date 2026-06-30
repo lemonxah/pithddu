@@ -27,7 +27,8 @@ simhub-plugin sh="":
 # Windows / Proton-Wine. Auto-adds the windows-gnu target; needs mingw-w64 installed
 # (e.g. `x86_64-w64-mingw32-gcc`). The crate is outside the host workspace.
 #   just shm-tools           -> build the two .exe
-#   just shm-tools install   -> build + copy exes + pith-shim-run into ~/pith/
+#   just shm-tools install   -> build + install (.exe → ~/.local/share/pithddu,
+#                               pith-shim-run → ~/.local/bin)
 shm-tools action="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -41,10 +42,15 @@ shm-tools action="":
     echo "  $out/pith-shmbridge.exe"
     act="{{action}}"; act="${act#action=}"   # tolerate `action=install`
     if [ "$act" = "install" ]; then
-        mkdir -p "$HOME/pith"
-        cp "$out/pith-shim.exe" "$out/pith-shmbridge.exe" "$HOME/pith/"
-        cp pith-shm-bridge/pith-shim-run "$HOME/pith/" && chmod +x "$HOME/pith/pith-shim-run"
-        echo "Installed shim, bridge + pith-shim-run to $HOME/pith/"
+        data="${XDG_DATA_HOME:-$HOME/.local/share}/pithddu"   # .exe files
+        bindir="$HOME/.local/bin"                             # wrapper (on PATH)
+        mkdir -p "$data" "$bindir"
+        cp "$out/pith-shim.exe" "$out/pith-shmbridge.exe" "$data/"
+        install -m755 pith-shm-bridge/pith-shim-run "$bindir/pith-shim-run"
+        echo "Installed:"
+        echo "  $data/{pith-shim.exe,pith-shmbridge.exe}"
+        echo "  $bindir/pith-shim-run   (use 'pith-shim-run %command%' if $bindir is on PATH)"
+        case ":$PATH:" in *":$bindir:"*) ;; *) echo "  NOTE: $bindir is not on your PATH — add it." ;; esac
     fi
 
 # Render one PNG per dashboard page into docs/screenshots/ (for the README/docs).
@@ -108,3 +114,50 @@ release stream version="":
     git tag -a "$tag" -m "release ${tag}"
     git push origin "$branch" "$tag"
     echo "Pushed $branch + $tag — GitHub Actions will build and publish the release."
+    if [ "$stream" = "dashboard" ]; then
+        echo "When CI has published the release, run:  just aur-publish"
+    fi
+
+# Publish the AUR package(s) for the current dashboard version. The version is
+# read from dashboard/Cargo.toml (the single source of truth — `just release
+# dashboard` bumps it). The in-repo ./aur/ PKGBUILDs are the source of truth: for
+# each package this bumps pkgver in ./aur, runs updpkgsums (downloads the release
+# assets + writes real sha256sums), regenerates .SRCINFO, copies PKGBUILD +
+# .SRCINFO into the ../aur/<pkg> AUR clone, and commits + pushes it. Run after
+# `just release dashboard`, once CI has published the assets.
+aur-publish:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ver=$(grep -m1 '^version' dashboard/Cargo.toml | sed -E 's/version *= *"([^"]+)".*/\1/')
+    ver=${ver#v}
+    if [ -z "$ver" ]; then echo "could not read version from dashboard/Cargo.toml" >&2; exit 1; fi
+    base="https://github.com/lemonxah/pithddu/releases/download/dashboard-v${ver}"
+    echo "AUR publish: dashboard ${ver}"
+
+    # Wait for CI to publish the release assets that updpkgsums will hash.
+    for a in pith-dashboard-linux-x86_64.tar.gz pith-shm-tools-win64.zip; do
+        echo "  waiting for ${a}…"
+        for i in $(seq 1 60); do
+            curl -fsI "${base}/${a}" >/dev/null 2>&1 && break
+            [ "$i" = 60 ] && { echo "    not published after 10m: ${base}/${a}" >&2; exit 1; }
+            sleep 10
+        done
+    done
+
+    for pkg in pithddu-dashboard-bin pithddu-dashboard; do
+        src="aur/$pkg"          # in-repo source of truth
+        dst="../aur/$pkg"       # AUR clone we push from
+        [ -f "$src/PKGBUILD" ] || { echo "  (skip $pkg — no in-repo PKGBUILD)"; continue; }
+        if [ ! -d "$dst/.git" ]; then echo "  (skip $pkg — no AUR clone at $dst)"; continue; fi
+        echo "  $pkg: bump → ${ver}, updpkgsums, .SRCINFO"
+        sed -i -E "s/^pkgver=.*/pkgver=${ver}/;s/^pkgrel=.*/pkgrel=1/" "$src/PKGBUILD"
+        # updpkgsums fills sha256sums from the real sources; SKIP stays for git/VCS.
+        if ! ( cd "$src" && updpkgsums && makepkg --printsrcinfo > .SRCINFO ); then
+            echo "    WARN: $pkg updpkgsums/.SRCINFO failed (source/tag/asset missing?) — skipping" >&2
+            continue
+        fi
+        cp "$src/PKGBUILD" "$src/.SRCINFO" "$dst/"
+        ( cd "$dst" && git add PKGBUILD .SRCINFO && git commit -m "$pkg ${ver}" && git push )
+        echo "  $pkg ${ver} pushed to AUR"
+    done
+    echo "Done. Commit the updated aur/ PKGBUILDs (+ .SRCINFO) to the monorepo too."

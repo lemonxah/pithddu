@@ -16,8 +16,10 @@ conflicts=('pithddu-dashboard-bin')
 # GitHub's tag tarball omits submodules, so we fetch it as a second source and
 # wire it in via the recorded submodule commit in prepare().
 source=("$pkgname::git+$url.git#tag=v$pkgver"
-        "pithddu-firmware::git+https://github.com/lemonxah/pithddu-firmware.git")
+        "pithddu-firmware::git+https://github.com/lemonxah/pithddu-firmware.git"
+        "pith-shm-tools-$pkgver.zip::https://github.com/lemonxah/pithddu/releases/download/dashboard-v$pkgver/pith-shm-tools-win64.zip")
 sha256sums=('SKIP'
+            'SKIP'
             'SKIP')
 
 prepare() {
@@ -44,4 +46,11 @@ package() {
   install -Dm644 icon.png "$pkgdir/usr/share/icons/hicolor/128x128/apps/pith-dashboard.png"
   install -Dm644 firmware/tools/99-pithddu.rules "$pkgdir/usr/lib/udev/rules.d/99-pithddu.rules"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+  # In-prefix shared-memory tools (prebuilt Windows .exe, run under Proton/Wine) +
+  # the Steam launch wrapper, from the matching dashboard release.
+  cd "$srcdir/pith-shm-tools-win64"
+  install -Dm644 pith-shim.exe "$pkgdir/usr/share/pithddu/pith-shim.exe"
+  install -Dm644 pith-shmbridge.exe "$pkgdir/usr/share/pithddu/pith-shmbridge.exe"
+  install -Dm755 pith-shim-run "$pkgdir/usr/bin/pith-shim-run"
 }
