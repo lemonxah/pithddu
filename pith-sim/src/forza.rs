@@ -91,11 +91,14 @@ impl GameDecoder for ForzaDecoder {
             t.pos_x = f32le(b, 232 + d).round() as i32;
             t.pos_z = f32le(b, 240 + d).round() as i32;
             // Tyre surface temps: one value per corner → fill all three zones so
-            // whichever zone a widget binds to shows the reading.
-            let ttfl = (f32le(b, 256 + d) * 10.0).round() as i32;
-            let ttfr = (f32le(b, 260 + d) * 10.0).round() as i32;
-            let ttrl = (f32le(b, 264 + d) * 10.0).round() as i32;
-            let ttrr = (f32le(b, 268 + d) * 10.0).round() as i32;
+            // whichever zone a widget binds to shows the reading. Forza reports
+            // these in Fahrenheit (the protocol's native temp unit) → convert to
+            // °C, then ×10 for the deci-degree integer the pipeline expects.
+            let f2c10 = |f: f32| (((f - 32.0) * 5.0 / 9.0) * 10.0).round() as i32;
+            let ttfl = f2c10(f32le(b, 256 + d));
+            let ttfr = f2c10(f32le(b, 260 + d));
+            let ttrl = f2c10(f32le(b, 264 + d));
+            let ttrr = f2c10(f32le(b, 268 + d));
             t.tt_fl_i = ttfl;
             t.tt_fl_m = ttfl;
             t.tt_fl_o = ttfl;

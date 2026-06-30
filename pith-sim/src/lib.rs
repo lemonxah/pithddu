@@ -19,6 +19,7 @@ pub mod gt7;
 pub mod le;
 pub mod outgauge;
 pub mod pcars;
+pub mod rf2;
 pub mod shm;
 pub mod shm_read;
 

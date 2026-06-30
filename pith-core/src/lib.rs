@@ -111,9 +111,21 @@ mod tests {
         assert_eq!(field_id_from_str("track_pct"), 62);
         assert_eq!(field_id_from_str("battery_pct"), 71);
         assert_eq!(field_id_from_str("ers_state"), 72);
+        // Tyre surface-average (×4) + carcass-core (×4) appended after ers_state.
+        assert_eq!(field_id_from_str("tt_avg_fl"), 73);
+        assert_eq!(field_id_from_str("tt_carc_fl"), 77);
+        assert_eq!(field_id_from_str("tt_carc_rr"), 80);
+        // pith-ui's ve_swap hardcodes these ids — keep them stable.
+        assert_eq!(field_id_from_str("fuel_dl"), 23);
+        assert_eq!(field_id_from_str("fuel_per_lap_ml"), 25);
+        assert_eq!(field_id_from_str("comp_fl"), 81);
+        assert_eq!(field_id_from_str("comp_rr"), 84);
+        assert_eq!(field_id_from_str("tc_slip"), 85);
+        assert_eq!(field_id_from_str("virtual_energy"), 87);
+        assert_eq!(field_id_from_str("fuel_is_ve"), 89);
         assert_eq!(field_id_from_str("nope"), 0);
-        assert_eq!(FIELDS.len(), 72);
-        assert_eq!(FIELD_COUNT, 73);
+        assert_eq!(FIELDS.len(), 89);
+        assert_eq!(FIELD_COUNT, 90);
     }
 
     #[test]

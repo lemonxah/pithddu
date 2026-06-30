@@ -173,8 +173,14 @@ pub fn parse_rf2_relatives(scoring: &[u8]) -> Option<Relatives> {
         if scoring.len() < b + VEH_STRIDE {
             break;
         }
-        let end = (b + 36..b + 36 + 64).take_while(|&o| scoring[o] != 0).count();
-        let name = core::str::from_utf8(&scoring[b + 36..b + 36 + end]).unwrap_or("").to_string();
+        // mDriverName[32]@4 is the actual driver; mVehicleName[64]@36 is the car/
+        // livery ("#21:WEC …" in LMU). Prefer the driver, fall back to the vehicle.
+        let read = |off: usize, max: usize| {
+            let end = (b + off..b + off + max).take_while(|&o| scoring[o] != 0).count();
+            core::str::from_utf8(&scoring[b + off..b + off + end]).unwrap_or("").trim().to_string()
+        };
+        let driver = read(4, 32);
+        let name = if driver.is_empty() { read(36, 64) } else { driver };
         cars.push(RawCar {
             place: scoring[b + 199],
             laps: le::i16(scoring, b + 100),

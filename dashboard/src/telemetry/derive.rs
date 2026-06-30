@@ -44,12 +44,13 @@ impl Provided {
 pub struct Derived {
     best: BestLap,
     fuel: Fuel,
+    ve: Ve,
     delta: Delta,
 }
 
 impl Default for Derived {
     fn default() -> Self {
-        Self { best: BestLap::default(), fuel: Fuel::default(), delta: Delta::default() }
+        Self { best: BestLap::default(), fuel: Fuel::default(), ve: Ve::default(), delta: Delta::default() }
     }
 }
 
@@ -61,9 +62,31 @@ impl Derived {
             self.best.update(t); // best needs last_lap; run before delta
         }
         self.fuel.update(t, provided.fuel_per_lap);
+        self.ve.update(t);
         if !provided.delta {
             self.delta.update(t);
         }
+        // Surface-average tyre temp = mean of the inner/mid/outer tread zones, so
+        // EVERY source exposes the single HUD-style number (the shim already sends
+        // it for rF2/LMU; this covers Forza/ACC/GT7/SimHub etc.). NA-aware so a
+        // missing zone stays "--" rather than averaging in garbage.
+        let na = pith_core::format::NA;
+        // Only fill it when the source DIDN'T (cur == 0); the shm path already sends
+        // an avg computed from raw Kelvin, which is more accurate than re-averaging
+        // the rounded zones, so don't clobber it.
+        let avg = |cur: i32, i: i32, m: i32, o: i32| {
+            if cur != 0 {
+                cur
+            } else if i == na || m == na || o == na {
+                na
+            } else {
+                (i + m + o) / 3
+            }
+        };
+        t.tt_avg_fl = avg(t.tt_avg_fl, t.tt_fl_i, t.tt_fl_m, t.tt_fl_o);
+        t.tt_avg_fr = avg(t.tt_avg_fr, t.tt_fr_i, t.tt_fr_m, t.tt_fr_o);
+        t.tt_avg_rl = avg(t.tt_avg_rl, t.tt_rl_i, t.tt_rl_m, t.tt_rl_o);
+        t.tt_avg_rr = avg(t.tt_avg_rr, t.tt_rr_i, t.tt_rr_m, t.tt_rr_o);
     }
 }
 
@@ -135,6 +158,39 @@ impl Fuel {
         // laps-left only when the source didn't send it.
         if t.fuel_laps_x10 == 0 && self.per_lap_ml > 0 && t.fuel_dl > 0 {
             t.fuel_laps_x10 = t.fuel_dl * 1000 / self.per_lap_ml;
+        }
+    }
+}
+
+/// Virtual-energy burned per completed lap (LMU energy-regulated cars) →
+/// `ve_per_lap`, in 0.1% units. Mirrors [`Fuel`] but on `virtual_energy`.
+#[derive(Default)]
+struct Ve {
+    started: bool,
+    last_lap: i32,
+    lap_start_ve: i32,
+    per_lap: i32,
+}
+
+impl Ve {
+    fn update(&mut self, t: &mut Telemetry) {
+        if t.fuel_is_ve == 0 || t.virtual_energy <= 0 {
+            return;
+        }
+        if !self.started || t.laps_done < self.last_lap {
+            self.started = true;
+            self.last_lap = t.laps_done;
+            self.lap_start_ve = t.virtual_energy;
+        } else if t.laps_done > self.last_lap {
+            let used = self.lap_start_ve - t.virtual_energy; // 0.1% units
+            self.last_lap = t.laps_done;
+            self.lap_start_ve = t.virtual_energy;
+            if used > 1 && used < 1000 {
+                self.per_lap = if self.per_lap == 0 { used } else { (self.per_lap * 3 + used) / 4 };
+            }
+        }
+        if self.per_lap > 0 {
+            t.ve_per_lap = self.per_lap;
         }
     }
 }

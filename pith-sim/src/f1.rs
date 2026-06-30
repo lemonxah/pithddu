@@ -73,16 +73,16 @@ impl GameDecoder for F1Decoder {
                     le::u8(b, base + 33) as i32,
                 );
                 set_tyre(&mut t, fl, fr, rl, rr);
-                // Brake temps (u16, °C) and tyre pressures (f32, PSI), same
-                // [RL, RR, FL, FR] order.
-                t.bt_rl = le::u16(b, base + 22) as i32;
-                t.bt_rr = le::u16(b, base + 24) as i32;
-                t.bt_fl = le::u16(b, base + 26) as i32;
-                t.bt_fr = le::u16(b, base + 28) as i32;
-                t.tp_rl = le::f32(b, base + 40).round() as i32;
-                t.tp_rr = le::f32(b, base + 44).round() as i32;
-                t.tp_fl = le::f32(b, base + 48).round() as i32;
-                t.tp_fr = le::f32(b, base + 52).round() as i32;
+                // Brake temps (u16, °C→0.1°C) and tyre pressures (f32, PSI→0.1),
+                // same [RL, RR, FL, FR] order.
+                t.bt_rl = le::u16(b, base + 22) as i32 * 10;
+                t.bt_rr = le::u16(b, base + 24) as i32 * 10;
+                t.bt_fl = le::u16(b, base + 26) as i32 * 10;
+                t.bt_fr = le::u16(b, base + 28) as i32 * 10;
+                t.tp_rl = (le::f32(b, base + 40) * 10.0).round() as i32;
+                t.tp_rr = (le::f32(b, base + 44) * 10.0).round() as i32;
+                t.tp_fl = (le::f32(b, base + 48) * 10.0).round() as i32;
+                t.tp_fr = (le::f32(b, base + 52) * 10.0).round() as i32;
             }
             // ---- LapData: 57-byte elements ----
             2 => {

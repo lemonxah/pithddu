@@ -20,6 +20,8 @@ pub struct ShmRead {
     pub label: &'static str,
     pub car: Option<String>,
     pub track: Option<String>,
+    /// Optional diagnostic line(s) for the GUI device log (rF2/LMU temp+flag probe).
+    pub debug: Option<String>,
 }
 
 /// Scan `/dev/shm` once and return the first sim block we can parse. rF2/LMU and
@@ -44,11 +46,13 @@ pub fn read_once() -> Option<ShmRead> {
                 crate::shm::apply_rf2_extended(&mut t, &eb);
             }
             // LMU native map (if the bridge mirrors it) → LIVE TC/ABS + game delta.
-            if let Some(lb) = read("LMU_Data") {
-                crate::shm::apply_lmu_native(&mut t, &lb);
+            let lb = read("LMU_Data");
+            if let Some(lb) = &lb {
+                crate::shm::apply_lmu_native(&mut t, lb);
             }
             let (car, track) = crate::shm::rf2_identity(&tb, &sb);
-            return Some(ShmRead { telem: t, label: "rF2 / LMU (shm)", car, track });
+            let debug = Some(crate::shm::rf2_lmu_debug(&tb, &sb, lb.as_deref()));
+            return Some(ShmRead { telem: t, label: "rF2 / LMU (shm)", car, track, debug });
         }
     }
     // AC / ACC / AC EVO: physics + graphics (+ static for identity).
@@ -69,14 +73,14 @@ pub fn read_once() -> Option<ShmRead> {
                 } else {
                     (None, None)
                 };
-                return Some(ShmRead { telem: t, label, car, track });
+                return Some(ShmRead { telem: t, label, car, track, debug: None });
             }
         }
     }
     // RaceRoom (single buffer; identity is numeric only).
     if let Some(b) = read("R3E") {
         if let Some(t) = crate::shm::parse_r3e(&b) {
-            return Some(ShmRead { telem: t, label: "RaceRoom (shm)", car: None, track: None });
+            return Some(ShmRead { telem: t, label: "RaceRoom (shm)", car: None, track: None, debug: None });
         }
     }
     None

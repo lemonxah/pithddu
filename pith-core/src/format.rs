@@ -168,11 +168,21 @@ pub fn parse_hex(s: &str) -> Option<(u8, u8, u8)> {
     Some((r, g, b))
 }
 
+/// "No reading" sentinel: a decoder writes this when a channel is absent or
+/// garbage (e.g. an uninitialised tyre at 0 K → -273°C). `format` renders it as
+/// `--`. Far outside any real 0.1°/0.1ms range, so it never collides with data —
+/// but NOT `i32::MIN`: its magnitude (2147483648) overflows the base-10 frame
+/// parser (`parse_int_opt`), so it must stay inside `±i32::MAX`.
+pub const NA: i32 = -2_000_000_000;
+
 /// Format a raw telemetry int into a display string — the exact port of
 /// `fmtc_format`. `scale` divides the raw value; `unit` is the verbatim suffix
 /// (pass `""` to omit — the device passes `""` for the degree ring). The output
-/// must be byte-identical to the C version.
+/// must be byte-identical to the C version (the `NA` sentinel is host-only).
 pub fn format(v: i32, fmt: Fmt, scale: i32, unit: &str) -> String {
+    if v == NA {
+        return "--".to_string();
+    }
     let scale = if scale <= 0 { 1 } else { scale };
     match fmt {
         Fmt::Time => {

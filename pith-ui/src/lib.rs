@@ -198,6 +198,13 @@ pub enum Kind {
         #[serde(default)]
         rows: u8,
     },
+    /// Fullscreen "all tyres" panel: a 2x2 car layout (FL/FR over RL/RR), each
+    /// corner showing the surface tread gradient (inner/mid/outer temps), plus
+    /// pressure, brake temp, wear % and compound. Single-car telemetry only.
+    /// Appended last so existing postcard variant indices are unchanged.
+    TyrePanel,
+    /// Three TC channels side by side: level / slip / cut (LMU). Appended last.
+    TcTriple,
 }
 
 /// One child of a `Row`/`Col`, with a flex weight (share of the main axis).
@@ -308,6 +315,8 @@ pub fn builtin(
         "gear" => Kind::GearSpeed { speed: false },
         "rpmStrip" => Kind::RpmStrip { count: 0 },
         "tyreGrid" => Kind::TyreGrid,
+        "tyrePanel" => Kind::TyrePanel,
+        "tcTriple" => Kind::TcTriple,
         "tcDual" => Kind::TcDual,
         "sectors" => Kind::Sectors,
         "lapPair" => Kind::LapPair,
@@ -437,6 +446,193 @@ fn contrast(bg: Rgb565) -> Rgb565 {
     }
 }
 
+/// Inflate a dirty rect by 1px each side, clamped to the screen. Tall glyphs can
+/// paint a row just outside their cell; a too-tight blit would leave that edge row
+/// stale. Lives in the lib so the platform blits returned rects verbatim.
+fn inflate(c: (i32, i32, i32, i32), sw: i32, sh: i32) -> (i32, i32, i32, i32) {
+    ((c.0 - 1).max(0), (c.1 - 1).max(0), (c.2 + 1).min(sw - 1), (c.3 + 1).min(sh - 1))
+}
+
+/// Reusable per-cell dirty painter. A widget emits its dynamic pieces as [`cell`]s
+/// (each with a content signature) and its fixed pieces via [`chrome`]; the painter
+/// caches each cell's signature across frames and, on an incremental pass, erases +
+/// redraws + records the (inflated) dirty rect ONLY for cells whose signature
+/// changed. This is how any multi-value widget gets fine-grained dirty for free —
+/// no bespoke per-widget bookkeeping. On `full` it paints everything and reseeds.
+///
+/// [`cell`]: Painter::cell
+/// [`chrome`]: Painter::chrome
+pub struct Painter<'a, D: DrawTarget<Color = Rgb565>> {
+    d: &'a mut D,
+    cache: &'a mut Vec<u64>,
+    rects: &'a mut Vec<(i32, i32, i32, i32)>,
+    dirty: Option<(i32, i32, i32, i32)>,
+    full: bool,
+    bg: Rgb565,
+    sw: i32,
+    sh: i32,
+    idx: usize,
+}
+
+impl<'a, D: DrawTarget<Color = Rgb565>> Painter<'a, D> {
+    fn new(d: &'a mut D, cache: &'a mut Vec<u64>, rects: &'a mut Vec<(i32, i32, i32, i32)>, full: bool, bg: Rgb565, sw: i32, sh: i32) -> Self {
+        Self { d, cache, rects, dirty: None, full, bg, sw, sh, idx: 0 }
+    }
+
+    /// Static content — painted once on a full repaint, skipped on incremental passes.
+    pub fn chrome(&mut self, draw: impl FnOnce(&mut D)) {
+        if self.full {
+            draw(self.d);
+        }
+    }
+
+    /// A dynamic cell bounded by `rect`. `sig` is its content signature (e.g. the
+    /// value it shows). Redraws + records a dirty rect only when `sig` changed.
+    pub fn cell(&mut self, rect: (i32, i32, i32, i32), sig: u64, draw: impl FnOnce(&mut D)) {
+        let i = self.idx;
+        self.idx += 1;
+        if self.cache.len() <= i {
+            self.cache.resize(i + 1, !sig); // guarantee a first-pass redraw
+        }
+        if self.full || self.cache[i] != sig {
+            if !self.full {
+                let (x0, y0, x1, y1) = rect;
+                fill_rect(self.d, x0, y0, x1 - x0 + 1, y1 - y0 + 1, self.bg);
+            }
+            draw(self.d);
+            self.cache[i] = sig;
+            if !self.full {
+                let r = inflate(rect, self.sw, self.sh);
+                self.rects.push(r);
+                self.dirty = Some(match self.dirty {
+                    None => r,
+                    Some((a0, b0, a1, b1)) => (a0.min(r.0), b0.min(r.1), a1.max(r.2), b1.max(r.3)),
+                });
+            }
+        }
+    }
+
+    fn finish(self) -> Option<(i32, i32, i32, i32)> {
+        self.dirty
+    }
+}
+
+fn tyre_tcol(v: i32) -> Rgb565 {
+    if v == format::NA {
+        pal(Pal::Dim)
+    } else if v > 950 {
+        pal(Pal::Red)
+    } else if v > 800 {
+        pal(Pal::Amber)
+    } else {
+        pal(Pal::Green)
+    }
+}
+
+fn tyre_compound(c: i32) -> &'static str {
+    match c {
+        0 => "S",
+        1 => "M",
+        2 => "H",
+        3 => "W",
+        _ => "--",
+    }
+}
+
+/// The All-Tyres panel, expressed purely as `Painter` cells — so per-cell dirty is
+/// the lib's job, not this widget's. 4 corners (FL FR / RL RR): small i/m/o tread
+/// zones on top, the average as the big focus number, then PRESS/BRAKE/WEAR/COMP.
+fn paint_tyre_panel<D: DrawTarget<Color = Rgb565>>(p: &mut Painter<D>, r: &Rect, t: &Telemetry) {
+    let (x, y, w, h) = (r.x, r.y, r.w as i32, r.h as i32);
+    let avg = [t.tt_avg_fl, t.tt_avg_fr, t.tt_avg_rl, t.tt_avg_rr];
+    let zi = [t.tt_fl_i, t.tt_fr_i, t.tt_rl_i, t.tt_rr_i];
+    let zm = [t.tt_fl_m, t.tt_fr_m, t.tt_rl_m, t.tt_rr_m];
+    let zo = [t.tt_fl_o, t.tt_fr_o, t.tt_rl_o, t.tt_rr_o];
+    let press = [t.tp_fl, t.tp_fr, t.tp_rl, t.tp_rr];
+    let wear = [t.tw_fl, t.tw_fr, t.tw_rl, t.tw_rr];
+    let brake = [t.bt_fl, t.bt_fr, t.bt_rl, t.bt_rr];
+    let comp = [t.comp_fl, t.comp_fr, t.comp_rl, t.comp_rr];
+    let labels = ["FL", "FR", "RL", "RR"];
+    let stat_labels = ["PRESS", "BRAKE", "WEAR", "COMP"];
+    let gut = (w / 10).clamp(8, 48);
+    let cw = (w - gut) / 2;
+    let chh = h / 2;
+    for i in 0..4 {
+        let px = x + (i as i32 % 2) * (cw + gut);
+        let py = y + (i as i32 / 2) * chh;
+        let zw = (cw - 16) / 3;
+        let zy = py + 22;
+        let zh = (chh / 7).clamp(14, 28);
+        let avg_sz = (chh / 5).clamp(20, 34);
+        let avg_top = zy + zh + 4;
+        let avg_cy = avg_top + avg_sz / 2;
+        let sy = avg_top + avg_sz + 8;
+        let lh = ((py + chh - 6 - sy) / 4).clamp(12, 40);
+        // static chrome
+        p.chrome(move |d| {
+            fill_round(d, px + 3, py + 3, cw - 6, chh - 6, 6, pal(Pal::Panel));
+            text(d, labels[i], px + 10, py + 12, 11, pal(Pal::Dim), HorizontalAlignment::Left, VerticalPosition::Center);
+            for (ri, lbl) in stat_labels.iter().enumerate() {
+                let ry = sy + ri as i32 * lh + lh / 2;
+                text(d, lbl, px + 12, ry, 11, pal(Pal::Dim), HorizontalAlignment::Left, VerticalPosition::Center);
+            }
+        });
+        // small i/m/o tread zones on top
+        let zones = [zi[i], zm[i], zo[i]];
+        for (k, &v) in zones.iter().enumerate() {
+            let zx = px + 8 + k as i32 * zw;
+            p.cell((zx + 1, zy, zx + zw - 2, zy + zh - 1), v as u64, move |d| {
+                fill_round(d, zx + 1, zy, zw - 2, zh, 3, tyre_tcol(v));
+                let ts = format::format(v, Fmt::Fixed1, 10, "");
+                text(d, &ts, zx + zw / 2, zy + zh / 2, 10, pal(Pal::Bg), HorizontalAlignment::Center, VerticalPosition::Center);
+            });
+        }
+        // average — the big focus number. The cell rect gets 3px of headroom top +
+        // 2px bottom: this big glyph overhangs a tight box, and the erase/blit must
+        // cover the overhang or a stale row lingers at the top. The 4px gap above is
+        // panel bg, so erasing into it is safe.
+        let av = avg[i];
+        p.cell((px + 8, avg_top - 3, px + cw - 8, avg_top + avg_sz + 1), av as u64, move |d| {
+            let ts = format::format(av, Fmt::Fixed1, 10, "°");
+            text(d, &ts, px + cw / 2, avg_cy, avg_sz as u32, tyre_tcol(av), HorizontalAlignment::Center, VerticalPosition::Center);
+        });
+        // stat values
+        for ri in 0..4 {
+            let (val, raw) = match ri {
+                0 => (format::format(press[i], Fmt::Fixed1, 10, " kPa"), press[i]),
+                1 => (format::format(brake[i], Fmt::Fixed1, 10, "°C"), brake[i]),
+                2 => (format::format(wear[i], Fmt::Int, 1, "%"), wear[i]),
+                _ => (String::from(tyre_compound(comp[i])), comp[i]),
+            };
+            let ry = sy + ri as i32 * lh + lh / 2;
+            let vx0 = px + cw * 2 / 5;
+            let vx1 = px + cw - 6;
+            p.cell((vx0, ry - lh / 2, vx1, ry + lh / 2 - 1), raw as u64, move |d| {
+                text(d, &val, px + cw - 12, ry, 13, pal(Pal::White), HorizontalAlignment::Right, VerticalPosition::Center);
+            });
+        }
+    }
+}
+
+/// LMU energy-regulated cars (Hypercar/LMDh) show fuel as Virtual Energy **%**,
+/// not litres. When `fuel_is_ve` is set and the bound field is a fuel channel,
+/// substitute the VE channel + a "%" unit so an ordinary Fuel / Fuel-per-lap
+/// widget reads correctly without a separate layout. Field ids are registry
+/// positions (append-only, asserted in a test): fuel_dl=23, fuel_per_lap_ml=25,
+/// virtual_energy=87, ve_per_lap=88. Returns (field, fmt, scale, unit) overrides.
+fn ve_swap(field: u8, t: &Telemetry) -> Option<(usize, Fmt, i32, &'static str)> {
+    if t.fuel_is_ve == 0 {
+        return None;
+    }
+    let sub = match field {
+        23 => 87, // fuel_dl → virtual_energy
+        25 => 88, // fuel_per_lap_ml → ve_per_lap
+        _ => return None,
+    };
+    let def = field_def(sub);
+    Some((sub, def.map(|d| d.fmt).unwrap_or(Fmt::Fixed1), def.map(|d| d.scale).unwrap_or(10), "%"))
+}
+
 /// `active` is a bitmask of HID buttons (bit = hid-1) currently pressed/toggled-on,
 /// so a button can light up while you're touching it. 0 = nothing active.
 fn draw_kind<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, kind: &Kind, t: &Telemetry, now_ms: i64, active: u32, car: &CarData, rel: &Relatives) {
@@ -457,18 +653,28 @@ fn draw_kind<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, kind: &Kind, t:
             text(d, s, ax, ay, sz, pal(*color), align.h(), vp);
         }
         Kind::Stat { field, label, fmt, scale, unit, base, rules, size } => {
-            let raw = field_value(t, *field as usize);
-            let def = field_def(*field as usize);
-            let f = fmt.unwrap_or_else(|| def.map(|d| d.fmt).unwrap_or(Fmt::Int));
-            let sc = if *scale > 0 { *scale } else { def.map(|d| d.scale).unwrap_or(1) };
+            let (raw, f, sc, unit): (i32, Fmt, i32, &str) = if let Some((fid, vf, vsc, vu)) = ve_swap(*field, t) {
+                (field_value(t, fid), vf, vsc, vu)
+            } else {
+                let def = field_def(*field as usize);
+                let f = fmt.unwrap_or_else(|| def.map(|d| d.fmt).unwrap_or(Fmt::Int));
+                let sc = if *scale > 0 { *scale } else { def.map(|d| d.scale).unwrap_or(1) };
+                (field_value(t, *field as usize), f, sc, unit.as_str())
+            };
             let sz = if *size == 0 { 22 } else { *size as u32 };
             text(d, label, cx, y + 11, 11, pal(Pal::Dim), HorizontalAlignment::Center, VerticalPosition::Center);
             let s = format::format(raw, f, sc, unit);
             text(d, &s, cx, y + h / 2 + 6, sz, rule_color(raw, *base, rules), HorizontalAlignment::Center, VerticalPosition::Center);
         }
         Kind::Bar { field, label, scale, base, rules } => {
-            let raw = field_value(t, *field as usize);
-            let pct = if *scale > 0 { (raw * 100 / *scale).clamp(0, 100) } else { 0 };
+            // VE cars: a fuel bar represents Virtual Energy 0..100% (full-scale 1000).
+            let (fid, scale) = if t.fuel_is_ve != 0 && (*field == 23 || *field == 25) {
+                (87usize, 1000)
+            } else {
+                (*field as usize, *scale)
+            };
+            let raw = field_value(t, fid);
+            let pct = if scale > 0 { (raw * 100 / scale).clamp(0, 100) } else { 0 };
             text(d, label, x + 4, y + 10, 11, pal(Pal::Dim), HorizontalAlignment::Left, VerticalPosition::Center);
             fill_rect(d, x + 4, y + h / 2, w - 8, h / 3, pal(Pal::Panel));
             fill_rect(d, x + 4, y + h / 2, (w - 8) * pct / 100, h / 3, rule_color(raw, *base, rules));
@@ -502,22 +708,41 @@ fn draw_kind<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, kind: &Kind, t:
             }
         }
         Kind::TyreGrid => {
-            // Temps are 0.1°C (carcass core). Thresholds in 0.1°C: >95°C / >80°C.
-            let temps = [t.tt_fl_m, t.tt_fr_m, t.tt_rl_m, t.tt_rr_m];
+            // Temps are 0.1°C — the per-tyre AVERAGE (mean of the inner/mid/outer
+            // zones), matching the in-game HUD readout. Thresholds: >95°C / >80°C.
+            // NA (no reading, e.g. uninitialised wheel) renders dim "--".
+            let temps = [t.tt_avg_fl, t.tt_avg_fr, t.tt_avg_rl, t.tt_avg_rr];
             let (bw, bh) = (w / 2, h / 2);
             for i in 0..4 {
                 let (cxx, cyy) = (x + (i as i32 % 2) * bw, y + (i as i32 / 2) * bh);
-                let col = if temps[i] > 950 { pal(Pal::Red) } else if temps[i] > 800 { pal(Pal::Amber) } else { pal(Pal::Green) };
+                let col = if temps[i] == format::NA { pal(Pal::Dim) } else if temps[i] > 950 { pal(Pal::Red) } else if temps[i] > 800 { pal(Pal::Amber) } else { pal(Pal::Green) };
                 fill_round(d, cxx + 2, cyy + 2, bw - 4, bh - 4, 4, pal(Pal::Panel));
                 let s = format::format(temps[i], Fmt::Fixed1, 10, "°C");
                 text(d, &s, cxx + bw / 2, cyy + bh / 2, 13, col, HorizontalAlignment::Center, VerticalPosition::Center);
             }
+        }
+        Kind::TyrePanel => {
+            // Standalone nodes use the per-cell dirty path (render_screen_dirty);
+            // here (composed widgets / preview) just do a full paint.
+            let mut cache = Vec::new();
+            let mut tr = Vec::new();
+            let mut p = Painter::new(d, &mut cache, &mut tr, true, pal(Pal::Bg), w, h);
+            paint_tyre_panel(&mut p, r, t);
         }
         Kind::TcDual => {
             text(d, "TC", x + w / 4, y + 12, 11, pal(Pal::Dim), HorizontalAlignment::Center, VerticalPosition::Center);
             text(d, "ABS", x + 3 * w / 4, y + 12, 11, pal(Pal::Dim), HorizontalAlignment::Center, VerticalPosition::Center);
             text(d, &t.tc.to_string(), x + w / 4, y + h / 2 + 6, 22, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
             text(d, &t.abs.to_string(), x + 3 * w / 4, y + h / 2 + 6, 22, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
+        }
+        Kind::TcTriple => {
+            // Three TC channels: level / slip / cut.
+            let cols = [("TC", t.tc), ("SLIP", t.tc_slip), ("CUT", t.tc_cut)];
+            for (k, (lbl, v)) in cols.iter().enumerate() {
+                let cx = x + w * (2 * k as i32 + 1) / 6;
+                text(d, lbl, cx, y + 12, 11, pal(Pal::Dim), HorizontalAlignment::Center, VerticalPosition::Center);
+                text(d, &v.to_string(), cx, y + h / 2 + 6, 20, pal(Pal::White), HorizontalAlignment::Center, VerticalPosition::Center);
+            }
         }
         Kind::Sectors => {
             let secs = [t.s1_ms, t.s2_ms, t.s3_ms];
@@ -582,10 +807,14 @@ fn draw_kind<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, kind: &Kind, t:
             }
         }
         Kind::Value { field, fmt, scale, unit, base, rules, size, align, valign } => {
-            let raw = field_value(t, *field as usize);
-            let def = field_def(*field as usize);
-            let f = fmt.unwrap_or_else(|| def.map(|d| d.fmt).unwrap_or(Fmt::Int));
-            let sc = if *scale > 0 { *scale } else { def.map(|d| d.scale).unwrap_or(1) };
+            let (raw, f, sc, unit): (i32, Fmt, i32, &str) = if let Some((fid, vf, vsc, vu)) = ve_swap(*field, t) {
+                (field_value(t, fid), vf, vsc, vu)
+            } else {
+                let def = field_def(*field as usize);
+                let f = fmt.unwrap_or_else(|| def.map(|d| d.fmt).unwrap_or(Fmt::Int));
+                let sc = if *scale > 0 { *scale } else { def.map(|d| d.scale).unwrap_or(1) };
+                (field_value(t, *field as usize), f, sc, unit.as_str())
+            };
             let sz = if *size == 0 { 22 } else { *size as u32 };
             let ax = match align {
                 Align::Left => x + 2,
@@ -684,6 +913,113 @@ fn draw_relatives<D: DrawTarget<Color = Rgb565>>(d: &mut D, r: &Rect, mode: u8, 
             pal(Pal::Cyan)
         };
         text_mono(d, &gs, x + w - 4, ry + row_h / 2, tsz, gcol, HorizontalAlignment::Right, VerticalPosition::Center);
+    }
+}
+
+/// FNV-1a over i64s — a cheap content signature for Painter cells.
+fn fnv64(vals: &[i64]) -> u64 {
+    let mut x: u64 = 0xcbf29ce484222325;
+    for &v in vals {
+        x ^= v as u64;
+        x = x.wrapping_mul(0x100000001b3);
+    }
+    x
+}
+
+fn name_sig(s: &str) -> i64 {
+    let mut x: u64 = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        x ^= b as u64;
+        x = x.wrapping_mul(0x100000001b3);
+    }
+    x as i64
+}
+
+/// Relatives/Standings via `Painter` — one cell per ROW (plus a structural cell
+/// that clears the whole node when the row count/mode changes so vacated rows
+/// don't ghost). Each row only redraws when its own data (place/name/gap/pit/
+/// player) changes, so a busy standings table no longer reblits every row every
+/// tick — that's the slowness you saw on those pages.
+fn paint_relatives<D: DrawTarget<Color = Rgb565>>(p: &mut Painter<D>, r: &Rect, mode: u8, rows: u8, rel: &Relatives) {
+    let (x, y, w, h) = (r.x, r.y, r.w as i32, r.h as i32);
+    let node_rect = (x, y, x + w - 1, y + h - 1);
+    let entries = rel.entries();
+    if entries.is_empty() {
+        p.cell(node_rect, 1, move |d| {
+            text(d, "no cars", x + w / 2, y + h / 2, 12, pal(Pal::Dim), HorizontalAlignment::Center, VerticalPosition::Center);
+        });
+        return;
+    }
+    let want = if rows == 0 { 6 } else { rows as usize };
+    let mut idx: Vec<usize> = (0..entries.len()).collect();
+    if mode == 1 {
+        idx.sort_by_key(|&i| entries[i].place);
+        idx.truncate(want);
+    } else {
+        idx.sort_by(|&a, &b| entries[b].gap_rel_ms.cmp(&entries[a].gap_rel_ms));
+        let pp = idx.iter().position(|&i| entries[i].is_player()).unwrap_or(0);
+        let half = want / 2;
+        let start = pp.saturating_sub(half).min(idx.len().saturating_sub(want.min(idx.len())));
+        let end = (start + want).min(idx.len());
+        idx = idx[start..end].to_vec();
+    }
+    let n = idx.len().max(1) as i32;
+    let row_h = (h / n).max(1);
+    let tsz = (row_h - 4).clamp(9, 16) as u32;
+    // Structural cell: clears the whole node when the row count or mode changes.
+    p.cell(node_rect, fnv64(&[idx.len() as i64, mode as i64]), |_d| {});
+    for (row, &i) in idx.iter().enumerate() {
+        let c = &entries[i];
+        let ry = y + row as i32 * row_h;
+        let player = c.is_player();
+        let in_pits = c.in_pits();
+        let (gap, signed) = if mode == 1 { (c.gap_leader_ms, false) } else { (c.gap_rel_ms, true) };
+        let sig = fnv64(&[c.place as i64, name_sig(c.name_str()), in_pits as i64, gap as i64, player as i64, idx.len() as i64, mode as i64]);
+        let label = alloc::format!("P{} {}", c.place, c.name_str());
+        let gs = if player && signed { alloc::string::String::from("--") } else { fmt_gap(gap, signed) };
+        let gcol = if signed {
+            if gap > 0 { pal(Pal::Red) } else if gap < 0 { pal(Pal::Green) } else { pal(Pal::Cyan) }
+        } else {
+            pal(Pal::Cyan)
+        };
+        p.cell((x, ry, x + w - 1, ry + row_h - 1), sig, move |d| {
+            if player {
+                fill_round(d, x + 1, ry + 1, w - 2, row_h - 2, 3, pal(Pal::Panel));
+            }
+            let fg = if in_pits { pal(Pal::Dim) } else { pal(Pal::White) };
+            text(d, &label, x + 4, ry + row_h / 2, tsz, fg, HorizontalAlignment::Left, VerticalPosition::Center);
+            text_mono(d, &gs, x + w - 4, ry + row_h / 2, tsz, gcol, HorizontalAlignment::Right, VerticalPosition::Center);
+        });
+    }
+}
+
+/// Paint a per-cell (Painter-based) multi-value widget. Returns `Some(dirty)` when
+/// `node` is one of these widgets (handled here), or `None` for ordinary node-level
+/// widgets the caller should draw the normal way. New multi-value widgets get
+/// fine-grained dirty just by adding an arm here.
+fn paint_node<D: DrawTarget<Color = Rgb565>>(
+    d: &mut D,
+    node: &Node,
+    t: &Telemetry,
+    rel: &Relatives,
+    cache: &mut Vec<u64>,
+    rects: &mut Vec<(i32, i32, i32, i32)>,
+    full: bool,
+    bg: Rgb565,
+    sw: i32,
+    sh: i32,
+) -> Option<Option<(i32, i32, i32, i32)>> {
+    let mut p = Painter::new(d, cache, rects, full, bg, sw, sh);
+    match &node.kind {
+        Kind::TyrePanel => {
+            paint_tyre_panel(&mut p, &node.rect, t);
+            Some(p.finish())
+        }
+        Kind::Relatives { mode, rows } => {
+            paint_relatives(&mut p, &node.rect, *mode, *rows, rel);
+            Some(p.finish())
+        }
+        _ => None,
     }
 }
 
@@ -798,8 +1134,19 @@ fn node_sig(kind: &Kind, t: &Telemetry, now_ms: i64, active: u32) -> u64 {
         Kind::GearSpeed { speed } => h(&[t.gear as i64, if *speed { t.speed_kmh as i64 } else { 0 }]),
         // blink phase keeps the rev strip live
         Kind::RpmStrip { .. } => h(&[t.rpm as i64, t.max_rpm as i64, t.shift_rpm as i64, now_ms / 80]),
-        Kind::TyreGrid => h(&[t.tt_fl_m as i64, t.tt_fr_m as i64, t.tt_rl_m as i64, t.tt_rr_m as i64]),
+        Kind::TyreGrid => h(&[t.tt_avg_fl as i64, t.tt_avg_fr as i64, t.tt_avg_rl as i64, t.tt_avg_rr as i64]),
+        Kind::TyrePanel => h(&[
+            t.tt_fl_i as i64, t.tt_fl_m as i64, t.tt_fl_o as i64,
+            t.tt_fr_i as i64, t.tt_fr_m as i64, t.tt_fr_o as i64,
+            t.tt_rl_i as i64, t.tt_rl_m as i64, t.tt_rl_o as i64,
+            t.tt_rr_i as i64, t.tt_rr_m as i64, t.tt_rr_o as i64,
+            t.tp_fl as i64, t.tp_fr as i64, t.tp_rl as i64, t.tp_rr as i64,
+            t.tw_fl as i64, t.tw_fr as i64, t.tw_rl as i64, t.tw_rr as i64,
+            t.bt_fl as i64, t.bt_fr as i64, t.bt_rl as i64, t.bt_rr as i64,
+            t.comp_fl as i64, t.comp_fr as i64, t.comp_rl as i64, t.comp_rr as i64,
+        ]),
         Kind::TcDual => h(&[t.tc as i64, t.abs as i64]),
+        Kind::TcTriple => h(&[t.tc as i64, t.tc_slip as i64, t.tc_cut as i64]),
         Kind::Sectors => h(&[t.s1_ms as i64, t.s2_ms as i64, t.s3_ms as i64, t.bs1_ms as i64, t.bs2_ms as i64, t.bs3_ms as i64]),
         Kind::LapPair => h(&[t.cur_lap_ms as i64, t.best_lap_ms as i64]),
         Kind::Position { .. } => h(&[t.position as i64, t.field_size as i64]),
@@ -837,16 +1184,18 @@ fn el_sig(el: &El, t: &Telemetry, now_ms: i64) -> u64 {
 pub struct RenderCache {
     sigs: Vec<u64>,
     last_tab: i32, // active tab last painted (tabbed screens) — switch forces a full repaint
+    cells: Vec<Vec<u64>>, // per-node Painter cell-signature cache (multi-value widgets)
 }
 
 impl RenderCache {
     pub fn new() -> Self {
-        Self { sigs: Vec::new(), last_tab: -1 }
+        Self { sigs: Vec::new(), last_tab: -1, cells: Vec::new() }
     }
     /// Force a full repaint on the next [`render_screen_diff`] (e.g. after a layout
     /// swap or display wake).
     pub fn invalidate(&mut self) {
         self.sigs.clear();
+        self.cells.clear();
         self.last_tab = -1;
     }
 }
@@ -903,9 +1252,23 @@ pub fn render_screen_dirty<D: DrawTarget<Color = Rgb565>>(
         let _ = d.clear(pal(s.bg));
         cache.sigs.clear();
         cache.sigs.resize(s.nodes.len(), 0);
+        cache.cells.clear();
+        cache.cells.resize(s.nodes.len(), Vec::new());
     }
     let mut dirty: Option<(i32, i32, i32, i32)> = None;
     for (i, node) in s.nodes.iter().enumerate() {
+        // Multi-value widgets (TyrePanel, Relatives) self-manage per-cell dirty via
+        // the Painter, so one changing value doesn't reblit the whole widget.
+        if let Some(d2opt) = paint_node(d, node, t, rel, &mut cache.cells[i], rects, full, pal(s.bg), s.w as i32, s.h as i32) {
+            if let Some(d2) = d2opt {
+                dirty = Some(match dirty {
+                    None => d2,
+                    Some((a0, b0, a1, b1)) => (a0.min(d2.0), b0.min(d2.1), a1.max(d2.2), b1.max(d2.3)),
+                });
+            }
+            cache.sigs[i] = node_sig(&node.kind, t, now_ms, active);
+            continue;
+        }
         let sig = node_sig(&node.kind, t, now_ms, active);
         if full || cache.sigs[i] != sig {
             let r = &node.rect;
@@ -918,12 +1281,18 @@ pub fn render_screen_dirty<D: DrawTarget<Color = Rgb565>>(
             let (x0, y0) = (r.x, r.y);
             let (x1, y1) = (r.x + r.w as i32 - 1, r.y + r.h as i32 - 1);
             if !full {
-                rects.push((x0, y0, x1, y1));
+                let rr = inflate((x0, y0, x1, y1), s.w as i32, s.h as i32);
+                rects.push(rr);
+                dirty = Some(match dirty {
+                    None => rr,
+                    Some((ax0, ay0, ax1, ay1)) => (ax0.min(rr.0), ay0.min(rr.1), ax1.max(rr.2), ay1.max(rr.3)),
+                });
+            } else {
+                dirty = Some(match dirty {
+                    None => (x0, y0, x1, y1),
+                    Some((ax0, ay0, ax1, ay1)) => (ax0.min(x0), ay0.min(y0), ax1.max(x1), ay1.max(y1)),
+                });
             }
-            dirty = Some(match dirty {
-                None => (x0, y0, x1, y1),
-                Some((ax0, ay0, ax1, ay1)) => (ax0.min(x0), ay0.min(y0), ax1.max(x1), ay1.max(y1)),
-            });
         }
     }
     if full {
@@ -935,8 +1304,9 @@ pub fn render_screen_dirty<D: DrawTarget<Color = Rgb565>>(
     }
 }
 
-/// Height of the tab strip on a tabbed screen.
-pub const TAB_STRIP_H: i32 = 26;
+/// Height of the tab strip on a tabbed screen. Tall enough to be an easy touch
+/// target (the tab row is the only fixed-position control on a tabbed screen).
+pub const TAB_STRIP_H: i32 = 40;
 
 /// Which tab a tap at (tx,ty) lands on, if it's in the strip of an `n`-tab screen
 /// of width `w`. None if the tap is below the strip (i.e. in the page body).
@@ -1022,9 +1392,13 @@ pub fn render_tabbed_dirty<D: DrawTarget<Color = Rgb565>>(
         draw_tab_strip(s, active, d);
         cache.sigs.clear();
         cache.sigs.resize(page.len(), 0);
+        cache.cells.clear();
+        cache.cells.resize(page.len(), Vec::new());
         cache.last_tab = active as i32;
         for (i, node) in page.iter().enumerate() {
-            draw_kind(d, &node.rect, &node.kind, t, now_ms, pressed, car, rel);
+            if paint_node(d, node, t, rel, &mut cache.cells[i], rects, true, pal(s.bg), s.w as i32, s.h as i32).is_none() {
+                draw_kind(d, &node.rect, &node.kind, t, now_ms, pressed, car, rel);
+            }
             cache.sigs[i] = node_sig(&node.kind, t, now_ms, pressed);
         }
         let whole = (0, 0, s.w as i32 - 1, s.h as i32 - 1);
@@ -1033,13 +1407,23 @@ pub fn render_tabbed_dirty<D: DrawTarget<Color = Rgb565>>(
     }
     let mut dirty: Option<(i32, i32, i32, i32)> = None;
     for (i, node) in page.iter().enumerate() {
+        if let Some(d2opt) = paint_node(d, node, t, rel, &mut cache.cells[i], rects, false, pal(s.bg), s.w as i32, s.h as i32) {
+            if let Some(d2) = d2opt {
+                dirty = Some(match dirty {
+                    None => d2,
+                    Some((a0, b0, a1, b1)) => (a0.min(d2.0), b0.min(d2.1), a1.max(d2.2), b1.max(d2.3)),
+                });
+            }
+            cache.sigs[i] = node_sig(&node.kind, t, now_ms, pressed);
+            continue;
+        }
         let sig = node_sig(&node.kind, t, now_ms, pressed);
         if cache.sigs[i] != sig {
             let r = &node.rect;
             fill_rect(d, r.x, r.y, r.w as i32, r.h as i32, pal(s.bg));
             draw_kind(d, r, &node.kind, t, now_ms, pressed, car, rel);
             cache.sigs[i] = sig;
-            let rect = (r.x, r.y, r.x + r.w as i32 - 1, r.y + r.h as i32 - 1);
+            let rect = inflate((r.x, r.y, r.x + r.w as i32 - 1, r.y + r.h as i32 - 1), s.w as i32, s.h as i32);
             rects.push(rect);
             dirty = Some(match dirty {
                 None => rect,

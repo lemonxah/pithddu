@@ -81,7 +81,9 @@ const fn telem_zero() -> Telemetry {
         s1_ms: 0, s2_ms: 0, s3_ms: 0, bs1_ms: 0, bs2_ms: 0, bs3_ms: 0,
         battery_pct: 0, ers_state: 0,
         tt_carc_fl: 0, tt_carc_fr: 0, tt_carc_rl: 0, tt_carc_rr: 0,
+        tt_avg_fl: 0, tt_avg_fr: 0, tt_avg_rl: 0, tt_avg_rr: 0,
         comp_fl: 0, comp_fr: 0, comp_rl: 0, comp_rr: 0,
+        tc_slip: 0, tc_cut: 0, virtual_energy: 0, ve_per_lap: 0, fuel_is_ve: 0,
     }
 }
 

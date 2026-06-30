@@ -1025,6 +1025,36 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
             }
         });
         let c = ctx.clone();
+        rl.on_tab_move(move |idx, dir| {
+            if let Some(u) = c.ui.upgrade() {
+                let mut st = c.lock();
+                let d = st.edit_display as usize;
+                let n = st.tabs[d].len() as i32;
+                let j = idx + dir;
+                if idx >= 0 && idx < n && j >= 0 && j < n {
+                    st.tabs[d].swap(idx as usize, j as usize);
+                    // Nodes follow their tab: swap the two pages' node assignments.
+                    for m in st.nodes.iter_mut().filter(|m| m.display as usize == d) {
+                        if m.page == idx {
+                            m.page = j;
+                        } else if m.page == j {
+                            m.page = idx;
+                        }
+                    }
+                    // Keep the moved tab selected/active.
+                    st.edit_tab = if st.edit_tab == idx {
+                        j
+                    } else if st.edit_tab == j {
+                        idx
+                    } else {
+                        st.edit_tab
+                    };
+                }
+                mark_dirty(&u, &st);
+                refresh_race(&u, &st);
+            }
+        });
+        let c = ctx.clone();
         rl.on_tab_select(move |idx| {
             if let Some(u) = c.ui.upgrade() {
                 let mut st = c.lock();

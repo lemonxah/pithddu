@@ -175,6 +175,8 @@ macro_rules! blit {
 /// frame. The pixels are gathered row-major within the window.
 macro_rules! blit_rect {
     ($disp:expr, $fb:expr, $x0:expr, $y0:expr, $x1:expr, $y1:expr) => {{
+        // Dirty rects come pre-inflated + clamped from pith-ui (it owns all dirty
+        // logic); clamp again defensively in case a caller passes raw bounds.
         let (x0, y0, x1, y1) = ($x0.max(0), $y0.max(0), $x1.min(ui::W - 1), $y1.min(ui::H - 1));
         if x1 >= x0 && y1 >= y0 {
             let w = $fb.w;
@@ -453,6 +455,10 @@ fn display_task() {
     let mut last_ui_ver = state::with(|s| s.ui_ver);
     let mut last_mode = mode;
     let mut last_disp_ver = state::with(|s| s.disp_ver);
+    // OTA progress screen state: draw the static frame once (full blit), then only
+    // re-blit the bar+percent rect when the percentage advances.
+    let mut ota_drawn = false;
+    let mut last_ota_pct = -1i32;
 
     // Two PSRAM framebuffers, one per physical panel. The UI draws into RAM
     // (fonts + fills never touch SPI) and each panel is flushed in a single DMA
@@ -466,12 +472,25 @@ fn display_task() {
 
         if ota::ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
             let pct = ota_pct();
-            ui::render_ota(&mut fb1, pct);
-            blit!(disp1, fb1);
-            blit!(disp2, fb1);
-            thread::sleep(Duration::from_millis(100));
+            if !ota_drawn {
+                // First OTA frame: paint the whole static screen once.
+                ui::render_ota(&mut fb1, pct);
+                blit!(disp1, fb1);
+                blit!(disp2, fb1);
+                ota_drawn = true;
+                last_ota_pct = pct;
+            } else if pct != last_ota_pct {
+                // Re-render into RAM (cheap) but only blit the bar + percent region —
+                // the title/subtitle never change. ~24 KB/panel vs a 614 KB full blit.
+                ui::render_ota(&mut fb1, pct);
+                blit_rect!(disp1, fb1, 56, 171, 424, 236);
+                blit_rect!(disp2, fb1, 56, 171, 424, 236);
+                last_ota_pct = pct;
+            }
+            thread::sleep(Duration::from_millis(20));
             continue;
         }
+        ota_drawn = false; // reset so a later OTA repaints its static frame
 
         // Re-apply display orientation live when the dashboard changes it (@DO).
         let cur_disp_ver = state::with(|s| s.disp_ver);

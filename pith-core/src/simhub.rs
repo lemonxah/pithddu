@@ -110,17 +110,32 @@ pub struct Telemetry {
     // (= 0..100.0%); ers_state 0 unavailable, 1 inactive, 2 propulsion, 3 regen.
     pub battery_pct: i32,
     pub ers_state: i32,
-    // Tyre carcass/core temp (0.1°C) — the stable temp HUDs show; tt_*_i/m/o stay
-    // the surface tread inner/mid/outer gradient.
+    // Tyre carcass/core temp (0.1°C) — the stable structural temp, distinct from
+    // the surface tread inner/mid/outer gradient (tt_*_i/m/o).
     pub tt_carc_fl: i32,
     pub tt_carc_fr: i32,
     pub tt_carc_rl: i32,
     pub tt_carc_rr: i32,
+    // Tyre surface average (0.1°C) — mean of the inner/mid/outer tread zones; the
+    // single number that matches a sim's per-tyre HUD readout.
+    pub tt_avg_fl: i32,
+    pub tt_avg_fr: i32,
+    pub tt_avg_rl: i32,
+    pub tt_avg_rr: i32,
     // Tyre compound per corner: 0 = soft, 1 = medium, 2 = hard, 3 = wet (-1 = n/a).
     pub comp_fl: i32,
     pub comp_fr: i32,
     pub comp_rl: i32,
     pub comp_rr: i32,
+    // Extra TC channels (LMU): slip + cut, alongside the main level (`tc`).
+    pub tc_slip: i32,
+    pub tc_cut: i32,
+    // LMU Virtual Energy: stint energy budget remaining in 0..=1000 (= 0..100.0%);
+    // `fuel_is_ve` = 1 when the car is energy-regulated (Hypercar/LMDh) so fuel is
+    // shown as % not litres. `ve_per_lap` = VE used per lap (0.1%), derived.
+    pub virtual_energy: i32,
+    pub ve_per_lap: i32,
+    pub fuel_is_ve: i32,
 }
 
 impl Telemetry {
@@ -218,6 +233,26 @@ impl Telemetry {
         a!(self.bs3_ms);
         a!(self.battery_pct);
         a!(self.ers_state);
+        // Tyre surface average (×4) then carcass core (×4). MUST stay in this order,
+        // matching field_registry.json + parse_line (positional frame contract).
+        a!(self.tt_avg_fl);
+        a!(self.tt_avg_fr);
+        a!(self.tt_avg_rl);
+        a!(self.tt_avg_rr);
+        a!(self.tt_carc_fl);
+        a!(self.tt_carc_fr);
+        a!(self.tt_carc_rl);
+        a!(self.tt_carc_rr);
+        // Tyre compound per corner (0 soft,1 med,2 hard,3 wet,-1 n/a).
+        a!(self.comp_fl);
+        a!(self.comp_fr);
+        a!(self.comp_rl);
+        a!(self.comp_rr);
+        a!(self.tc_slip);
+        a!(self.tc_cut);
+        a!(self.virtual_energy);
+        a!(self.ve_per_lap);
+        a!(self.fuel_is_ve);
         s
     }
 }
@@ -437,6 +472,24 @@ pub fn parse_line(line: &str) -> Option<Telemetry> {
         if !c.opt_field(&mut t.bs3_ms) { break; }
         if !c.opt_field(&mut t.battery_pct) { break; }
         if !c.opt_field(&mut t.ers_state) { break; }
+        // Tyre surface average (×4) then carcass core (×4) — same order as to_frame.
+        if !c.opt_field(&mut t.tt_avg_fl) { break; }
+        if !c.opt_field(&mut t.tt_avg_fr) { break; }
+        if !c.opt_field(&mut t.tt_avg_rl) { break; }
+        if !c.opt_field(&mut t.tt_avg_rr) { break; }
+        if !c.opt_field(&mut t.tt_carc_fl) { break; }
+        if !c.opt_field(&mut t.tt_carc_fr) { break; }
+        if !c.opt_field(&mut t.tt_carc_rl) { break; }
+        if !c.opt_field(&mut t.tt_carc_rr) { break; }
+        if !c.opt_field(&mut t.comp_fl) { break; }
+        if !c.opt_field(&mut t.comp_fr) { break; }
+        if !c.opt_field(&mut t.comp_rl) { break; }
+        if !c.opt_field(&mut t.comp_rr) { break; }
+        if !c.opt_field(&mut t.tc_slip) { break; }
+        if !c.opt_field(&mut t.tc_cut) { break; }
+        if !c.opt_field(&mut t.virtual_energy) { break; }
+        if !c.opt_field(&mut t.ve_per_lap) { break; }
+        if !c.opt_field(&mut t.fuel_is_ve) { break; }
         break;
     }
 

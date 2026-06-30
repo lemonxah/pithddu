@@ -8,6 +8,7 @@ pub const CATALOG: &[(&str, &str, &str)] = &[
     ("fuel", "Fuel", "Fuel remaining"),
     ("fuelPerLap", "Fuel per Lap", "Avg consumption"),
     ("tyres", "Tyre Temps", "4-corner tyre grid"),
+    ("allTyres", "All Tyres", "Fullscreen tyre panel: temps, pressure, brake, wear"),
     ("tyreWear", "Tyre Wear", "4-corner wear %"),
     ("lapTimes", "Lap Times", "Current + best"),
     ("lastLap", "Last Lap", "Last lap time"),
@@ -17,7 +18,10 @@ pub const CATALOG: &[(&str, &str, &str)] = &[
     ("oil", "Oil Temp", "Oil temp"),
     ("battery", "Battery (ERS)", "Hybrid state-of-charge %"),
     ("ers", "ERS State", "Boost: idle/deploy/regen"),
+    ("virtualEnergy", "Virtual Energy", "LMU energy budget %"),
+    ("vePerLap", "VE per Lap", "Energy used per lap %"),
     ("tcAbs", "TC / ABS", "Aid levels"),
+    ("tcTriple", "TC (3)", "TC level / slip / cut"),
     ("mapPosition", "Track Map", "Position dot on track"),
     ("flag", "Flag", "Current flag colour"),
     ("clock", "Session Clock", "Time remaining"),
@@ -88,7 +92,11 @@ pub fn default_spec(ty: &str) -> ModSpec {
         "fuelPerLap" => stat(&mut m, "fuel_per_lap_ml", "FUEL/LAP", "L", "white"),
         "tyres" => {
             m.kind = "tyreGrid".into();
-            m.field = "tt_fl_m".into();
+            m.field = "tt_avg_fl".into();
+            m.unit = DEG.into();
+        }
+        "allTyres" => {
+            m.kind = "tyrePanel".into();
             m.unit = DEG.into();
         }
         "tyreWear" => {
@@ -117,7 +125,16 @@ pub fn default_spec(ty: &str) -> ModSpec {
             ];
         }
         "ers" => stat(&mut m, "ers_state", "ERS", "", "cyan"),
+        "virtualEnergy" => {
+            stat(&mut m, "virtual_energy", "ENERGY", "%", "green");
+            m.rules = vec![
+                ColorRule { op: "<".into(), v: 50, color: "red".into() },
+                ColorRule { op: "<".into(), v: 150, color: "amber".into() },
+            ];
+        }
+        "vePerLap" => stat(&mut m, "ve_per_lap", "VE/LAP", "%", "white"),
         "tcAbs" => m.kind = "tcDual".into(),
+        "tcTriple" => m.kind = "tcTriple".into(),
         "mapPosition" => m.kind = "map".into(),
         "flag" => {
             m.kind = "flag".into();
@@ -399,7 +416,9 @@ pub const ELEM_KINDS: &[(&str, &str)] = &[
     ("gearSpeed", "Gear + Speed"),
     ("rpmStrip", "RPM Strip"),
     ("tyreGrid", "Tyre Grid"),
+    ("tyrePanel", "All Tyres"),
     ("tcDual", "TC / ABS"),
+    ("tcTriple", "TC (3)"),
     ("sectors", "Sectors"),
     ("lapPair", "Lap Times"),
     ("position", "Position"),

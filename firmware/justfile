@@ -40,6 +40,16 @@ image:
     espflash save-image --chip esp32s3 \
         target/xtensa-esp32s3-espidf/release/pithddu pithddu-xiao_s3.bin
 
+# OTA-flash the bare app image to a RUNNING device over USB — no BOOT button, the
+# same self-reflash path as the dashboard's "FLASH LOCAL BUILD" button (pith-flash
+# CLI, in the host workspace). Build the bin first with `just image`. Pass a serial
+# port to force it; otherwise it auto-detects (USB HID, else the first serial port).
+#   just ota                  -> OTA-flash ./pithddu-xiao_s3.bin
+#   just ota /dev/ttyACM0     -> force a serial port
+ota port="":
+    test -f pithddu-xiao_s3.bin || { echo "pithddu-xiao_s3.bin not found — run 'just image' first" >&2; exit 1; }
+    cd .. && cargo run -p pith-flash --release -- {{ if port != "" { "-p " + port } else { "" } }} firmware/pithddu-xiao_s3.bin
+
 # Cut a release by tagging + pushing (CI builds the bins and publishes the GitHub Release).
 #   just release           -> bump the patch of the latest vX.Y.Z tag (0.1.0 if none)
 #   just release 1.2.3     -> release exactly that version

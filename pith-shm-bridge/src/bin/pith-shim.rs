@@ -61,6 +61,10 @@ fn main() {
                         t.battery_pct, t.pit_limiter, t.fuel_dl,
                     );
                 }
+                // Raw rF2/LMU field probe (carcass temp + flag bytes), if present.
+                if let Some(d) = &r.debug {
+                    print!("{d}");
+                }
             }
         }
         ticks = ticks.wrapping_add(1);

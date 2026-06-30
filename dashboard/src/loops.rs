@@ -1026,6 +1026,21 @@ pub fn shm_reader_loop(ctx: Arc<Ctx>) {
                     if let Some(track) = r.track.as_deref() {
                         apply_track(&ctx, track);
                     }
+                    // rF2/LMU temp+flag probe → GUI device log (Device tab).
+                    if let Some(dbg) = r.debug.clone() {
+                        let c2 = ctx.clone();
+                        ctx.ui_run(move |u| {
+                            let mut s = c2.lock();
+                            for l in dbg.lines() {
+                                s.device_log.push(l.to_string());
+                            }
+                            let len = s.device_log.len();
+                            if len > 2000 {
+                                s.device_log.drain(..len - 2000);
+                            }
+                            crate::ui_bridge::push_device_log(&u, &s);
+                        });
+                    }
                 }
                 missing_since = Instant::now();
                 std::thread::sleep(Duration::from_millis(20)); // ~50 Hz

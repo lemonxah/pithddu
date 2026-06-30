@@ -224,6 +224,7 @@ export global RaceLayout {
     callback tab-add();
     callback tab-rename(int /*idx*/, string);
     callback tab-remove(int /*idx*/);
+    callback tab-move(int /*idx*/, int /*dir: -1 left, +1 right*/); // reorder tab pages
     callback tab-select(int /*idx*/);
     callback set-mod-page(int /*tab page for the selected node*/);
     // track map: which bundled track outline the Map widget shows (baked into @UI)

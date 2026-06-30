@@ -31,11 +31,11 @@ pub fn parse_ac_physics(b: &[u8]) -> Option<Telemetry> {
 
     // ---- common region (≤252): valid for both original AC and ACC ----
     if b.len() >= 256 {
-        // wheelsPressure[4] @88 (kPa), tyreCoreTemperature[4] @152 (°C); FL,FR,RL,RR.
-        t.tp_fl = le::f32(b, 88).round() as i32;
-        t.tp_fr = le::f32(b, 92).round() as i32;
-        t.tp_rl = le::f32(b, 96).round() as i32;
-        t.tp_rr = le::f32(b, 100).round() as i32;
+        // wheelsPressure[4] @88 (kPa→0.1kPa), tyreCoreTemperature[4] @152 (°C); FL,FR,RL,RR.
+        t.tp_fl = (le::f32(b, 88) * 10.0).round() as i32;
+        t.tp_fr = (le::f32(b, 92) * 10.0).round() as i32;
+        t.tp_rl = (le::f32(b, 96) * 10.0).round() as i32;
+        t.tp_rr = (le::f32(b, 100) * 10.0).round() as i32;
         set_tyre(&mut t,
             le::f32(b, 152).round() as i32, le::f32(b, 156).round() as i32,
             le::f32(b, 160).round() as i32, le::f32(b, 164).round() as i32);
@@ -46,11 +46,11 @@ pub fn parse_ac_physics(b: &[u8]) -> Option<Telemetry> {
     // ---- ACC-only extended region (full 800-byte block) ----
     if b.len() >= 800 {
         t.clutch = (le::f32(b, 364) * 100.0).round().clamp(0.0, 100.0) as i32;
-        // brakeTemp[4] @348 (°C), FL,FR,RL,RR.
-        t.bt_fl = le::f32(b, 348).round() as i32;
-        t.bt_fr = le::f32(b, 352).round() as i32;
-        t.bt_rl = le::f32(b, 356).round() as i32;
-        t.bt_rr = le::f32(b, 360).round() as i32;
+        // brakeTemp[4] @348 (°C→0.1°C), FL,FR,RL,RR.
+        t.bt_fl = (le::f32(b, 348) * 10.0).round() as i32;
+        t.bt_fr = (le::f32(b, 352) * 10.0).round() as i32;
+        t.bt_rl = (le::f32(b, 356) * 10.0).round() as i32;
+        t.bt_rr = (le::f32(b, 360) * 10.0).round() as i32;
         t.brake_bias_x10 = (le::f32(b, 564) * 1000.0).round() as i32; // 0..1 → x10%
         t.water_c = le::f32(b, 712).round() as i32;
         t.ignition = le::i32(b, 772); // ignitionOn
@@ -154,7 +154,16 @@ pub fn apply_lmu_native(t: &mut Telemetry, b: &[u8]) {
     t.tc_active = (b[base + 747] != 0) as i32; // mTCActive
     t.wipers = b[base + 749] as i32; // mWiperState (0 off,1 auto,2 slow,3 fast)
     t.tc = b[base + 750] as i32; // mTC (current level)
+    t.tc_slip = b[base + 752] as i32; // mTCSlip
+    t.tc_cut = b[base + 754] as i32; // mTCCut
     t.abs = b[base + 756] as i32; // mABS (current level)
+    // Virtual Energy (mVirtualEnergy@776, f32 0..1) — present on energy-regulated
+    // cars (Hypercar/LMDh). When valid, mark fuel as VE so it's shown as a %.
+    let ve = le::f32(b, base + 776);
+    if ve.is_finite() && (0.0..=1.0).contains(&ve) && ve > 0.0 {
+        t.virtual_energy = (ve as f64 * 1000.0).round() as i32;
+        t.fuel_is_ve = 1;
+    }
     // The game's own lap delta (mDeltaBest, double seconds, neg = ahead) → 0.1 ms.
     let dbest = le::f64(b, base + 696);
     if dbest.is_finite() && dbest.abs() < 600.0 {
@@ -165,6 +174,141 @@ pub fn apply_lmu_native(t: &mut Telemetry, b: &[u8]) {
     if soc.is_finite() && (0.0..=1.0).contains(&soc) {
         t.battery_pct = (soc * 1000.0).round() as i32;
     }
+}
+
+/// LOGGING ONLY (no logic change). Dumps the raw rF2/LMU fields behind the two
+/// LMU reports — carcass temp reading ~ambient, and missing race flags — so we
+/// can see in-game whether LMU actually populates them and where the real values
+/// live. Player lookup mirrors `parse_rf2` (kept in sync; this never mutates).
+pub fn rf2_lmu_debug(telem: &[u8], scoring: &[u8], lmu: Option<&[u8]>) -> String {
+    const TELEM_BASE: usize = 16;
+    const TELEM_STRIDE: usize = 1888;
+    // Re-find the player exactly as parse_rf2 does (scoring element + telem idx).
+    let (player_id, sbase) = {
+        let (mut pid, mut sb) = (None, None);
+        if scoring.len() >= 122 {
+            let n = (le::i32(scoring, 116).max(0) as usize).min(128);
+            for i in 0..n {
+                let b = 560 + i * 584;
+                if scoring.len() < b + 584 {
+                    break;
+                }
+                if scoring[b + 196] != 0 {
+                    pid = Some(le::i32(scoring, b));
+                    sb = Some(b);
+                    break;
+                }
+            }
+        }
+        (pid, sb)
+    };
+    let tn = (le::i32(telem, 12).max(0) as usize).min(128);
+    let mut idx = 0usize;
+    if let Some(pid) = player_id {
+        for j in 0..tn {
+            let b = TELEM_BASE + j * TELEM_STRIDE;
+            if telem.len() < b + TELEM_STRIDE {
+                break;
+            }
+            if le::i32(telem, b) == pid {
+                idx = j;
+                break;
+            }
+        }
+    }
+    let base = TELEM_BASE + idx * TELEM_STRIDE;
+    let mut out = String::new();
+    // Flags: mGamePhase@120, mYellowFlagState@121, mSectorFlag[3]@122, per-car mFlag@sb+504.
+    if scoring.len() >= 125 {
+        let phase = scoring[120];
+        let yellow = scoring[121] as i8;
+        let sect = [scoring[122] as i8, scoring[123] as i8, scoring[124] as i8];
+        let carflag = sbase.map(|b| scoring[b + 504] as i8).unwrap_or(-1);
+        out += &format!("[shm] flag: phase={phase} yellow={yellow} sect={sect:?} carFlag={carflag}\n");
+    }
+    // FL tyre temps (raw Kelvin → °C): surface tread L/C/R + carcass core.
+    if telem.len() >= base + 848 + 260 {
+        let w = base + 848;
+        let k = |o: usize| le::f64(telem, w + o);
+        out += &format!(
+            "[shm] FL °C: surf[{:.1}/{:.1}/{:.1}] inner[{:.1}/{:.1}/{:.1}] carcass={:.1}\n",
+            k(128) - 273.15, k(136) - 273.15, k(144) - 273.15, // surface tread L/C/R
+            k(212) - 273.15, k(220) - 273.15, k(228) - 273.15, // inner layer L/C/R
+            k(204) - 273.15,                                   // carcass core
+        );
+    }
+    // Compound names (verify @620/@638 offsets vs the in-game compound).
+    if telem.len() >= base + 656 {
+        out += &format!(
+            "[shm] compound: front={:?}({}) rear={:?}({})\n",
+            ascii_str(telem, base + 620, 18), compound_code(&ascii_str(telem, base + 620, 18)),
+            ascii_str(telem, base + 638, 18), compound_code(&ascii_str(telem, base + 638, 18)),
+        );
+    }
+    // LMU native map: confirm it's mapped + hex-dump the native scoring block
+    // (~offset 1632) where flag/FCY state should live for the LMU-only override.
+    match lmu {
+        Some(b) if b.len() > 128468 => {
+            out += &format!("[shm] LMU_Data len={} active={} pIdx={}", b.len(), b[128464], b[128465]);
+            // Track name is at 1632; by rF2ScoringInfo layout mGamePhase ≈ +108 → 1740.
+            // Dump that flag region (phase/yellow/sector) so a yellow shows a change.
+            if b.len() >= 1740 + 12 {
+                out += " lmuFlag@1740:";
+                for o in 0..12 {
+                    out += &format!(" {:02x}", b[1740 + o]);
+                }
+            }
+            out += "\n";
+            let pidx = b[128465] as usize;
+            let lbase = 128468 + pidx * 1888;
+            // Hypothesis: LMU's native entry uses the rF2 field layout but with LMU's
+            // own (HUD-matching) values. Read it via the SAME struct + offsets and
+            // print rpm/water/oil/FL-temps. If rpm matches the engine and the temps
+            // match the HUD, we just read everything from the native map for LMU.
+            if let Some(lv) = crate::rf2::VehicleTelem::at(b, lbase) {
+                let w0 = lv.wheel(0);
+                out += &format!(
+                    "[shm] LMU-native@rF2off: rpm={:.0} water={:.1} oil={:.1} | FLsurfC[{:.1}/{:.1}/{:.1}] FLinnerC[{:.1}/{:.1}/{:.1}] carcC={:.1}\n",
+                    lv.rpm(), lv.water_temp(), lv.oil_temp(),
+                    w0.surface_temp_k(0) - 273.15, w0.surface_temp_k(1) - 273.15, w0.surface_temp_k(2) - 273.15,
+                    w0.inner_temp_k(0) - 273.15, w0.inner_temp_k(1) - 273.15, w0.inner_temp_k(2) - 273.15,
+                    w0.carcass_temp_k() - 273.15,
+                );
+            }
+            // Pending features: the 3 TC fields (mTC@750/mTCMax@751/mTCSlip@752/
+            // mTCCut@754, u8) for the TC-triple widget, and mVirtualEnergy@776 (f32)
+            // for LMU fuel-as-%. Compare these to the in-game TC settings + the VE %.
+            if b.len() >= lbase + 780 {
+                out += &format!(
+                    "[shm] LMU tc[lvl={} max={} slip={} cut={}] VE@776={:.4} battSoC@704={:.3}\n",
+                    b[lbase + 750], b[lbase + 751], b[lbase + 752], b[lbase + 754],
+                    le::f32(b, lbase + 776), le::f64(b, lbase + 704),
+                );
+            }
+            // Fallback hunt: if the layout differs, scan the native entry for f32/f64
+            // values near the game's tyre temp (~85-95°C / ~358-368 K) to locate it.
+            if pidx < 104 && b.len() >= lbase + 1888 {
+                out += "[shm] LMU-native ~game-temp scan:";
+                let mut o = 0;
+                while o + 8 <= 1888 {
+                    let f32v = le::f32(b, lbase + o);
+                    let f64v = le::f64(b, lbase + o);
+                    let near = |v: f64| (85.0..95.0).contains(&v) || (358.0..368.0).contains(&v);
+                    if near(f32v as f64) {
+                        out += &format!(" f32@{o}={f32v:.1}");
+                    }
+                    if near(f64v) {
+                        out += &format!(" f64@{o}={f64v:.1}");
+                    }
+                    o += 4;
+                }
+                out += "\n";
+            }
+        }
+        Some(_) => out += "[shm] LMU_Data present but short\n",
+        None => out += "[shm] LMU_Data: not mapped\n",
+    }
+    out
 }
 
 /// Car model + track from the rF2 / LMU scoring buffer: `mTrackName` (ASCII) at
@@ -207,6 +351,25 @@ fn utf16_str(b: &[u8], o: usize, max_chars: usize) -> String {
 }
 
 /// Decode a NUL-terminated ASCII/UTF-8 string of up to `max` bytes from offset `o`.
+/// Map an rF2/LMU tyre compound NAME ("Soft"/"Medium"/"Hard"/"Wet", or sim-
+/// specific) to our code: 0 soft, 1 medium, 2 hard, 3 wet/inter, -1 unknown.
+fn compound_code(name: &str) -> i32 {
+    let n = name.to_ascii_lowercase();
+    if n.is_empty() {
+        -1
+    } else if n.contains("wet") || n.contains("rain") || n.contains("inter") {
+        3
+    } else if n.contains("hard") {
+        2
+    } else if n.contains("medium") || n.contains("(m)") {
+        1
+    } else if n.contains("soft") {
+        0
+    } else {
+        -1
+    }
+}
+
 fn ascii_str(b: &[u8], o: usize, max: usize) -> String {
     let end = (o + max).min(b.len());
     let slice = &b[o..end];
@@ -340,67 +503,86 @@ pub fn parse_rf2(telem: &[u8], scoring: &[u8]) -> Option<Telemetry> {
         return None;
     }
 
+    // Typed view over the player's vehicle telemetry — all offsets live in `rf2`.
+    let v = crate::rf2::VehicleTelem::at(telem, base)?;
     let mut t = Telemetry::idle();
-    t.gear = le::gear_byte(le::i32(telem, base + 352)); // -1=R, 0=N, 1+
-    t.rpm = le::f64(telem, base + 356).round().max(0.0) as i32;
-    t.max_rpm = le::f64(telem, base + 532).round().max(0.0) as i32;
+    t.gear = le::gear_byte(v.gear()); // -1=R, 0=N, 1+
+    t.rpm = v.rpm().round().max(0.0) as i32;
+    t.max_rpm = v.max_rpm().round().max(0.0) as i32;
     t.shift_rpm = t.max_rpm;
-    let (vx, vy, vz) = (
-        le::f64(telem, base + 184),
-        le::f64(telem, base + 192),
-        le::f64(telem, base + 200),
-    );
-    t.speed_kmh = ((vx * vx + vy * vy + vz * vz).sqrt() * 3.6).round().max(0.0) as i32;
-    t.fuel_dl = (le::f64(telem, base + 524) * 10.0).round().max(0.0) as i32;
-    t.throttle = (le::f64(telem, base + 388) * 100.0).round() as i32;
-    t.brake = (le::f64(telem, base + 396) * 100.0).round() as i32;
-    // mUnfilteredSteering @404 (-1..1).
-    t.steer = (le::f64(telem, base + 404) * 100.0).round().clamp(-100.0, 100.0) as i32;
-    t.clutch = (le::f64(telem, base + 412) * 100.0).round() as i32;
-    t.water_c = le::f64(telem, base + 364).round() as i32;
-    t.oil_c = le::f64(telem, base + 372).round() as i32;
-    t.laps_done = le::i32(telem, base + 20);
+    t.speed_kmh = (v.speed_ms() * 3.6).round().max(0.0) as i32;
+    t.fuel_dl = (v.fuel() * 10.0).round().max(0.0) as i32;
+    t.throttle = (v.throttle() * 100.0).round() as i32;
+    t.brake = (v.brake() * 100.0).round() as i32;
+    t.steer = (v.steering() * 100.0).round().clamp(-100.0, 100.0) as i32;
+    t.clutch = (v.clutch() * 100.0).round() as i32;
+    t.water_c = v.water_temp().round() as i32;
+    t.oil_c = v.oil_temp().round() as i32;
+    t.laps_done = v.lap_number();
     // rF2 has no current-lap-time field ("instantly becomes last"); derive it from
-    // mElapsedTime@12 − mLapStartET@24 (both doubles, seconds).
-    let cur = le::f64(telem, base + 12) - le::f64(telem, base + 24);
+    // mElapsedTime − mLapStartET (seconds).
+    let cur = v.elapsed_time() - v.lap_start_et();
     t.cur_lap_ms = (cur * 1000.0).round().max(0.0) as i32;
-    t.fuel_cap_dl = (le::f64(telem, base + 608) * 10.0).round().max(0.0) as i32;
-    // Status bytes: mHeadlights@543, mSpeedLimiter@604, mIgnitionStarter@619.
-    t.headlights = (telem[base + 543] != 0) as i32;
-    t.pit_limiter = (telem[base + 604] != 0) as i32;
-    t.ignition = (telem[base + 619] != 0) as i32;
-    // Hybrid / electric boost (LMU hypercars & LMDh): battery state-of-charge
-    // (mBatteryChargeFraction@696, 0..1 → 0..100.0%) and the boost-motor state
-    // (mElectricBoostMotorState@736: 0 unavailable, 1 inactive, 2 propulsion,
-    // 3 regeneration).
-    let batt = le::f64(telem, base + 696);
+    t.fuel_cap_dl = (v.fuel_capacity() * 10.0).round().max(0.0) as i32;
+    t.headlights = v.headlights() as i32;
+    t.pit_limiter = v.speed_limiter() as i32;
+    t.ignition = v.ignition() as i32;
+    // Hybrid / electric boost (LMU hypercars & LMDh): battery SoC (0..1 → 0..100.0%)
+    // and boost-motor state (0 unavailable, 1 inactive, 2 propulsion, 3 regen).
+    let batt = v.battery_charge_fraction();
     if batt.is_finite() {
         t.battery_pct = (batt * 1000.0).round().clamp(0.0, 1000.0) as i32;
     }
-    t.ers_state = telem[base + 736] as i32;
-    // Per-wheel (FL,FR,RL,RR @ base+848 stride 260). Tyre temps in 0.1°C:
-    // **carcass** (mTireCarcassTemperature@204, Kelvin) is the stable core temp the
-    // in-game HUD shows → the headline `_m`; the surface tread L/R (mTemperature
-    // [0]@128 / [2]@144) give the inner/outer gradient. Brake temp@+24 (°C),
-    // pressure@+120 (kPa), wear (mWear@152, 0..1 fraction remaining) → %.
-    let k2dc = |k: f64| ((k - 273.15) * 10.0).round() as i32; // Kelvin → 0.1°C
-    for (i, (ti, tm, to, bt, tp, tw)) in [
-        (&mut t.tt_fl_i, &mut t.tt_fl_m, &mut t.tt_fl_o, &mut t.bt_fl, &mut t.tp_fl, &mut t.tw_fl),
-        (&mut t.tt_fr_i, &mut t.tt_fr_m, &mut t.tt_fr_o, &mut t.bt_fr, &mut t.tp_fr, &mut t.tw_fr),
-        (&mut t.tt_rl_i, &mut t.tt_rl_m, &mut t.tt_rl_o, &mut t.bt_rl, &mut t.tp_rl, &mut t.tw_rl),
-        (&mut t.tt_rr_i, &mut t.tt_rr_m, &mut t.tt_rr_o, &mut t.bt_rr, &mut t.tp_rr, &mut t.tw_rr),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let w = base + 848 + i * 260;
-        *ti = k2dc(le::f64(telem, w + 128)); // surface tread left
-        *tm = k2dc(le::f64(telem, w + 204)); // carcass core (headline)
-        *to = k2dc(le::f64(telem, w + 144)); // surface tread right
-        *bt = le::f64(telem, w + 24).round() as i32;
-        *tp = le::f64(telem, w + 120).round() as i32;
-        *tw = (le::f64(telem, w + 152) * 100.0).round().clamp(0.0, 100.0) as i32;
+    t.ers_state = v.electric_boost_motor_state();
+    // Per-wheel tyre data. The in-game tyre HUD shows the SURFACE tread temp
+    // (`mTemperature`, left/center/right) — the responsive track-contact layer that
+    // heats fast under load. Decisive signature: the HUD reads HIGHER and climbs
+    // FASTER than the inner layer/carcass, which only a fast layer (surface) does;
+    // a smoothed value would lag, not lead. It just happens to ≈ the inner layer
+    // when tyres are cool (both ~upper-50s), which earlier looked like a match.
+    // `_i/_m/_o` = surface inner/middle/outer; tt_carc keeps the carcass core.
+    // Kelvin → 0.1°C with a 200 K floor: garbage wheels become NA → "--", not -273°C.
+    const NA: i32 = pith_core::format::NA;
+    let k2dc = |k: f64| {
+        if k.is_finite() && k > 200.0 {
+            ((k - 273.15) * 10.0).round() as i32
+        } else {
+            NA
+        }
+    };
+    #[allow(clippy::type_complexity)]
+    let wheels: [(&mut i32, &mut i32, &mut i32, &mut i32, &mut i32, &mut i32, &mut i32, &mut i32); 4] = [
+        (&mut t.tt_fl_i, &mut t.tt_fl_m, &mut t.tt_fl_o, &mut t.tt_avg_fl, &mut t.tt_carc_fl, &mut t.bt_fl, &mut t.tp_fl, &mut t.tw_fl),
+        (&mut t.tt_fr_i, &mut t.tt_fr_m, &mut t.tt_fr_o, &mut t.tt_avg_fr, &mut t.tt_carc_fr, &mut t.bt_fr, &mut t.tp_fr, &mut t.tw_fr),
+        (&mut t.tt_rl_i, &mut t.tt_rl_m, &mut t.tt_rl_o, &mut t.tt_avg_rl, &mut t.tt_carc_rl, &mut t.bt_rl, &mut t.tp_rl, &mut t.tw_rl),
+        (&mut t.tt_rr_i, &mut t.tt_rr_m, &mut t.tt_rr_o, &mut t.tt_avg_rr, &mut t.tt_carc_rr, &mut t.bt_rr, &mut t.tp_rr, &mut t.tw_rr),
+    ];
+    for (i, (ti, tm, to, avg, carc, bt, tp, tw)) in wheels.into_iter().enumerate() {
+        let wh = v.wheel(i);
+        let (ki, km, ko) = (wh.surface_temp_k(0), wh.surface_temp_k(1), wh.surface_temp_k(2));
+        let zi = k2dc(ki); // surface tread, left
+        let zm = k2dc(km); // surface tread, center
+        let zo = k2dc(ko); // surface tread, right
+        *ti = zi;
+        *tm = zm;
+        *to = zo;
+        *carc = k2dc(wh.carcass_temp_k());
+        // Average — computed from the RAW Kelvin (mean then one conversion), so it
+        // isn't degraded by averaging the already-rounded 0.1°C zones. This is the
+        // game's per-tyre number; matches the in-game HUD.
+        *avg = if zi == NA || zm == NA || zo == NA { NA } else { k2dc((ki + km + ko) / 3.0) };
+        *bt = k2dc(wh.brake_temp_k()); // Kelvin → 0.1°C
+        *tp = (wh.pressure_kpa() * 10.0).round() as i32; // kPa → 0.1 kPa
+        *tw = (wh.wear_fraction() * 100.0).round().clamp(0.0, 100.0) as i32;
     }
+
+    // Tyre compound is per-AXLE (front → FL/FR, rear → RL/RR).
+    let front = compound_code(v.front_compound_name());
+    let rear = compound_code(v.rear_compound_name());
+    t.comp_fl = front;
+    t.comp_fr = front;
+    t.comp_rl = rear;
+    t.comp_rr = rear;
 
     // ---- Scoring-buffer fields for the player car (not in telemetry): position,
     // lap/sector times, track %, session flag, field size. Times are doubles in
@@ -439,14 +621,18 @@ pub fn parse_rf2(telem: &[u8], scoring: &[u8]) -> Option<Telemetry> {
                 let pos = lapdist + (t.speed_kmh as f64 / 3.6) * lag;
                 t.track_pct = ((pos / tracklen) * 1000.0).clamp(0.0, 1000.0) as i32;
             }
-            // flag: session phase (file 120) + yellow (121) + per-car mFlag (sb+504).
+            // flag: session phase (120) + full-course yellow (121) + per-sector flag
+            // (mSectorFlag[3]@122) + per-car mFlag (sb+504). LMU signals LOCAL yellows
+            // ONLY via mSectorFlag — value 1 = yellow, 11 = green/clear (observed) —
+            // leaving phase=5/yellow=0, so we must check the sectors too.
             let phase = scoring[120];
             let yellow = scoring[121] as i8;
+            let sector_yellow = scoring.len() > 124 && (122..=124).any(|o| scoring[o] == 1);
             let carflag = scoring[sb + 504];
             t.flag = if phase == 8 {
                 5 // checkered (session over)
-            } else if phase == 6 || yellow > 0 {
-                2 // yellow / full-course yellow
+            } else if phase == 6 || yellow > 0 || sector_yellow {
+                2 // yellow — full-course (phase/yellow) or local (sector flag)
             } else if carflag == 6 {
                 3 // blue
             } else if phase == 5 {

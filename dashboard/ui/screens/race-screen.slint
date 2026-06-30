@@ -468,7 +468,13 @@ export component RaceScreen inherits Rectangle {
         }
     // Scrollable page body so the edit-module card stays reachable on short or
     // HiDPI-scaled displays (where the fixed-height column would otherwise clip).
+    // In edit mode the page must NOT flick-scroll: this Flickable is an ancestor
+    // of the canvas, so an interactive viewport steals node drag/resize gestures
+    // (the canvas itself is deliberately Flickable-free, see the stage below).
+    // The right-hand sidebar panels have their own inner Flickables, so disabling
+    // page scroll here doesn't strand them while placing widgets.
     Flickable {
+        interactive: !root.edit-mode;
         viewport-width: self.width;
         viewport-height: body.preferred-height;
     body := VerticalLayout {
@@ -751,6 +757,8 @@ export component RaceScreen inherits Rectangle {
                                     TouchArea { clicked => { RaceLayout.tab-select(i); } }
                                 }
                                 LineEdit { text: tn; horizontal-stretch: 1; edited(t) => { RaceLayout.tab-rename(i, t); } }
+                                Button { text: "◀"; enabled: i > 0; clicked => { RaceLayout.tab-move(i, -1); } }
+                                Button { text: "▶"; enabled: i < RaceLayout.tab-names.length - 1; clicked => { RaceLayout.tab-move(i, 1); } }
                                 Button { text: "✕"; enabled: RaceLayout.tab-names.length > 1; clicked => { RaceLayout.tab-remove(i); } }
                             }
                             Button { text: "+ Add tab"; clicked => { RaceLayout.tab-add(); } }

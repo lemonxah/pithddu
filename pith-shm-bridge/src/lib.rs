@@ -28,6 +28,8 @@ pub struct ShimRead {
     pub car: Option<String>,
     pub track: Option<String>,
     pub relatives: Option<String>,
+    /// Optional raw-field probe (rF2/LMU temp+flag) for the shim console readout.
+    pub debug: Option<String>,
 }
 
 /// Read whichever sim is currently exposing shared memory and return a ready-to-
@@ -42,12 +44,14 @@ pub fn read_frame() -> Option<ShimRead> {
                 shm::apply_rf2_extended(&mut tel, &ext); // static TC/ABS assist setting
             }
             // LMU 1.3+ native map: overlays LIVE TC/ABS levels + the game's own delta.
-            if let Some(lmu) = win::read_any(LMU_DATA) {
-                shm::apply_lmu_native(&mut tel, &lmu);
+            let lmu = win::read_any(LMU_DATA);
+            if let Some(lmu) = &lmu {
+                shm::apply_lmu_native(&mut tel, lmu);
             }
             let (car, track) = shm::rf2_identity(&t, &s);
             let relatives = pith_core::relatives::parse_rf2_relatives(&s).map(|r| r.to_wire());
-            return Some(ShimRead { frame: tel.to_frame(), label: "rF2/LMU", car, track, relatives });
+            let debug = Some(shm::rf2_lmu_debug(&t, &s, lmu.as_deref()));
+            return Some(ShimRead { frame: tel.to_frame(), label: "rF2/LMU", car, track, relatives, debug });
         }
     }
     // AC / ACC / AC EVO: physics + graphics (+ static for identity).
@@ -68,13 +72,13 @@ pub fn read_frame() -> Option<ShimRead> {
                 } else {
                     (None, None)
                 };
-                return Some(ShimRead { frame: tel.to_frame(), label, car, track, relatives: None });
+                return Some(ShimRead { frame: tel.to_frame(), label, car, track, relatives: None, debug: None });
             }
         }
     }
     if let Some(b) = win::read_any(R3E) {
         if let Some(tel) = shm::parse_r3e(&b) {
-            return Some(ShimRead { frame: tel.to_frame(), label: "RaceRoom", car: None, track: None, relatives: None });
+            return Some(ShimRead { frame: tel.to_frame(), label: "RaceRoom", car: None, track: None, relatives: None, debug: None });
         }
     }
     None
