@@ -1,0 +1,5 @@
+# track only the package definition; ignore makepkg build artifacts
+*
+!.gitignore
+!PKGBUILD
+!.SRCINFO

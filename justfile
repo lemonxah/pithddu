@@ -149,13 +149,23 @@ aur-publish:
         dst="../aur/$pkg"       # AUR clone we push from
         [ -f "$src/PKGBUILD" ] || { echo "  (skip $pkg — no in-repo PKGBUILD)"; continue; }
         if [ ! -d "$dst/.git" ]; then echo "  (skip $pkg — no AUR clone at $dst)"; continue; fi
-        echo "  $pkg: bump → ${ver}, updpkgsums, .SRCINFO"
+        echo "  $pkg: bump → ${ver}"
         sed -i -E "s/^pkgver=.*/pkgver=${ver}/;s/^pkgrel=.*/pkgrel=1/" "$src/PKGBUILD"
-        # updpkgsums fills sha256sums from the real sources; SKIP stays for git/VCS.
-        if ! ( cd "$src" && updpkgsums && makepkg --printsrcinfo > .SRCINFO ); then
-            echo "    WARN: $pkg updpkgsums/.SRCINFO failed (source/tag/asset missing?) — skipping" >&2
-            continue
+        # Only the -bin package gets real sha256sums: its sources are the published
+        # release tarball + shm zip (plain http → updpkgsums downloads, never clones;
+        # SRCDEST → temp so it doesn't litter ./aur). The SOURCE package builds from
+        # a VCS tag, so its sums stay SKIP — no download or clone at all.
+        if [ "$pkg" = "pithddu-dashboard-bin" ]; then
+            work=$(mktemp -d)
+            if ! ( cd "$src" && SRCDEST="$work" updpkgsums ); then
+                rm -rf "$work"
+                echo "    WARN: $pkg updpkgsums failed (asset missing?) — skipping" >&2
+                continue
+            fi
+            rm -rf "$work"
         fi
+        # .SRCINFO is metadata-only (no sources fetched), safe for both packages.
+        ( cd "$src" && makepkg --printsrcinfo > .SRCINFO )
         cp "$src/PKGBUILD" "$src/.SRCINFO" "$dst/"
         ( cd "$dst"
           git add PKGBUILD .SRCINFO
