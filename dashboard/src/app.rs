@@ -170,6 +170,7 @@ fn init_impl(ui: &AppWindow, rt: &tokio::runtime::Runtime, live: bool) -> Arc<Ct
         rt: rt.handle().clone(),
         running: Arc::new(AtomicBool::new(true)),
         ota_active: Arc::new(AtomicBool::new(false)),
+        sim_active: Arc::new(AtomicBool::new(false)),
         busy: Arc::new(AtomicBool::new(false)),
         car_gen: Arc::new(AtomicUsize::new(0)),
         build_cancel: Arc::new(AtomicBool::new(false)),
@@ -249,6 +250,11 @@ fn init_impl(ui: &AppWindow, rt: &tokio::runtime::Runtime, live: bool) -> Arc<Ct
     rt.spawn_blocking({
         let c = ctx.clone();
         move || crate::loops::shm_reader_loop(c)
+    });
+    // GUI "Simulate" test feed (idles until the button is toggled on).
+    rt.spawn_blocking({
+        let c = ctx.clone();
+        move || crate::loops::sim_loop(c)
     });
 
     ctx

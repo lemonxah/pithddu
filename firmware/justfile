@@ -13,18 +13,17 @@ build:
 release-build:
     cargo build --release
 
-# Full flash over USB (espflash): bootloader + TWO_OTA partition table + app.
-# Passing the BUILT partition table is REQUIRED — without it espflash writes its
-# default single-app table, which has no second OTA slot, so esp_ota_begin fails
-# ("OTAERR") and pith-flash / GUI OTA updates can't work. Drops --monitor (this
-# board's console is UART0, not USB; use the GUI device-log instead).
+# Write the main firmware app into the ota_0 slot (offset 0x1a0000). The RECOVERY
+# app (pith-recovery, in the factory slot) owns the bootloader + partition table —
+# flash that FIRST (cd ../pith-recovery && just flash). A full flash here would
+# target the factory slot and clobber recovery, so we write only the app image to
+# ota_0. After this, recovery chain-loads ota_0 (NVS "mainslot" defaults to 0).
+# BOOT-mode required: hold BOOT, tap RESET, release BOOT. Console is UART0.
 flash port="":
     cargo build --release
-    espflash flash \
-        --bootloader target/xtensa-esp32s3-espidf/release/bootloader.bin \
-        --partition-table target/xtensa-esp32s3-espidf/release/partition-table.bin \
-        {{ if port != "" { "-p " + port } else { "" } }} \
-        target/xtensa-esp32s3-espidf/release/pithddu
+    espflash save-image --chip esp32s3 \
+        target/xtensa-esp32s3-espidf/release/pithddu pithddu-xiao_s3.bin
+    espflash write-bin {{ if port != "" { "-p " + port } else { "" } }} 0x1a0000 pithddu-xiao_s3.bin
 
 # Serial monitor only.
 monitor port="":

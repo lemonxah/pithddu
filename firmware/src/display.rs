@@ -417,6 +417,18 @@ fn display_task() {
         .init(&mut delay)
         .expect("disp2");
 
+    // Backlight enable (active-high): drive it high so the panels are lit + stable
+    // (a floating enable pin makes the screen flicker). Bound for the task lifetime
+    // so the pin stays driven.
+    let _backlight = if pins.backlight >= 0 {
+        PinDriver::output(unsafe { AnyIOPin::new(pins.backlight) }).ok().map(|mut bl| {
+            let _ = bl.set_high();
+            bl
+        })
+    } else {
+        None
+    };
+
     // race_screen pin = which physical panel index (0/1) shows the race screen.
     let race_is_1 = pins.race_screen == 0;
 
@@ -465,6 +477,10 @@ fn display_task() {
     // blit. fb1 -> disp1, fb2 -> disp2.
     let mut fb1 = FrameBuf::new(ui::W, ui::H);
     let mut fb2 = FrameBuf::new(ui::W, ui::H);
+
+    // The boot splash / recovery BIOS lives in the separate pith-recovery app (it
+    // runs first from the factory partition), so the main firmware boots straight
+    // into the dashboard render loop — no in-app timer here.
 
     loop {
         let t = *usb::TELEM.lock().unwrap();

@@ -53,11 +53,18 @@ pub fn begin(itf: Transport, size: i32) {
     unsafe {
         let part = sys::esp_ota_get_next_update_partition(core::ptr::null());
         if part.is_null() {
+            log::error!("OTA: no next update partition");
             reply(itf, "OTAERR\n");
             return;
         }
+        let label = core::ffi::CStr::from_ptr((*part).label.as_ptr())
+            .to_str()
+            .unwrap_or("?");
+        log::info!("OTA: target '{label}' @0x{:x} size {size}", (*part).address);
         let mut handle: sys::esp_ota_handle_t = 0;
-        if sys::esp_ota_begin(part, size as usize, &mut handle) != 0 {
+        let r = sys::esp_ota_begin(part, size as usize, &mut handle);
+        if r != 0 {
+            log::error!("OTA: esp_ota_begin failed: 0x{r:x}");
             reply(itf, "OTAERR\n");
             return;
         }
@@ -97,6 +104,7 @@ pub fn feed(itf: Transport, data: &[u8]) -> bool {
             sys::esp_ota_write(ota.handle, data.as_ptr() as *const core::ffi::c_void, n)
         };
         if res != 0 {
+            log::error!("OTA: esp_ota_write failed at {} bytes: 0x{res:x}", ota.total - ota.remaining);
             unsafe { sys::esp_ota_end(ota.handle) };
             *g = None;
             ACTIVE.store(false, Ordering::SeqCst);
@@ -105,13 +113,21 @@ pub fn feed(itf: Transport, data: &[u8]) -> bool {
             ota.remaining -= n as i32;
             ota.acc += n as i32;
             if ota.remaining <= 0 {
-                let ok = unsafe {
-                    sys::esp_ota_end(ota.handle) == 0
-                        && sys::esp_ota_set_boot_partition(ota.part as *const _) == 0
+                let part = ota.part as *const sys::esp_partition_t;
+                let ok = unsafe { sys::esp_ota_end(ota.handle) == 0 };
+                // Recovery (factory) owns boot-slot selection in the recovery-first
+                // model. So instead of pointing otadata at the new image ourselves,
+                // record which OTA slot we just wrote in NVS; on reboot the device
+                // lands in recovery, which chain-loads this slot.
+                let slot = unsafe {
+                    ((*part).subtype as i32
+                        - sys::esp_partition_subtype_t_ESP_PARTITION_SUBTYPE_APP_OTA_0 as i32)
+                        .clamp(0, 1) as u8
                 };
                 *g = None;
                 ACTIVE.store(false, Ordering::SeqCst);
                 if ok {
+                    crate::state::set_main_slot(slot);
                     REBOOT.store(true, Ordering::SeqCst);
                     Post::Done
                 } else {
@@ -160,4 +176,41 @@ pub fn should_reboot() -> bool {
 /// (if we just OTA'd into it) doesn't revert us on the next reset.
 pub fn mark_valid() {
     unsafe { sys::esp_ota_mark_app_valid_cancel_rollback() };
+}
+
+/// Point the boot partition back at the `factory` (recovery) app so the NEXT reset
+/// returns to recovery instead of re-running this main image. Called early in the
+/// main firmware's boot — recovery is always the front door (it chain-loads us).
+/// A crash before this still lands in recovery anyway (factory is the bootloader's
+/// fallback when the selected slot is bad).
+pub fn return_to_recovery_on_next_boot() {
+    unsafe {
+        let fac = sys::esp_partition_find_first(
+            sys::esp_partition_type_t_ESP_PARTITION_TYPE_APP,
+            sys::esp_partition_subtype_t_ESP_PARTITION_SUBTYPE_APP_FACTORY,
+            core::ptr::null(),
+        );
+        if !fac.is_null() {
+            if sys::esp_ota_set_boot_partition(fac) != 0 {
+                log::warn!("could not point boot back to recovery (factory)");
+            }
+        } else {
+            log::warn!("factory (recovery) partition not found");
+        }
+    }
+}
+
+/// Label of the flash slot we're running from (e.g. "ota_0" / "ota_1" / "factory").
+/// Shown on the boot splash so you can see which image actually booted.
+pub fn running_label() -> String {
+    unsafe {
+        let p = sys::esp_ota_get_running_partition();
+        if p.is_null() {
+            return "?".to_string();
+        }
+        core::ffi::CStr::from_ptr((*p).label.as_ptr())
+            .to_str()
+            .unwrap_or("?")
+            .to_string()
+    }
 }

@@ -132,8 +132,7 @@ fn main() -> ExitCode {
         );
         ExitCode::SUCCESS
     } else {
-        let detail = dash.log.lines().last().unwrap_or("").trim();
-        eprintln!("✗ Flash failed{}", if detail.is_empty() { String::new() } else { format!(" — {detail}") });
+        eprintln!("✗ Flash failed. Full device log:\n----\n{}\n----", dash.log.trim_end());
         ExitCode::FAILURE
     }
 }

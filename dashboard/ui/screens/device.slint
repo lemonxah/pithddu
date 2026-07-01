@@ -100,6 +100,23 @@ export component DeviceConfigScreen inherits Rectangle {
                         }
                     }
                 }
+
+                Card {
+                    VerticalLayout {
+                        padding: 16px; spacing: 6px;
+                        SectionLabel { text: "TEST"; }
+                        Text { text: "Stream a full animated telemetry feed (every field) and cycle car shift-light profiles to the device to verify data transfer + rendering."; color: Theme.text3; font-size: 12px; wrap: word-wrap; }
+                        VerticalLayout { alignment: start;
+                            PrimaryButton {
+                                text: AppState.sim-on ? "Stop Simulation" : "Simulate telemetry";
+                                clicked => {
+                                    AppState.sim-on = !AppState.sim-on;
+                                    AppState.simulate(AppState.sim-on);
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // ---- right: display roles + pin layout ----

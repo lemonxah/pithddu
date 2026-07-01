@@ -1,0 +1,36 @@
+# pith-recovery tasks (Rust / esp-idf). Run from pith-recovery/. Source the esp env
+# first:  source ~/export-esp.sh
+set shell := ["bash", "-uc"]
+
+default:
+    @just --list
+
+# Build (debug).
+build:
+    cargo build
+
+# Build optimized.
+release-build:
+    cargo build --release
+
+# Full flash: bootloader + the custom partition table (factory + dual-OTA) + the
+# recovery app into the FACTORY slot. This lays down the partition table the whole
+# device uses, so flash RECOVERY FIRST, then write the main firmware to ota_0
+# (firmware/: just flash). BOOT-mode required: hold BOOT, tap RESET, release BOOT.
+flash port="":
+    cargo build --release
+    espflash flash \
+        --bootloader target/xtensa-esp32s3-espidf/release/bootloader.bin \
+        --partition-table target/xtensa-esp32s3-espidf/release/partition-table.bin \
+        {{ if port != "" { "-p " + port } else { "" } }} \
+        target/xtensa-esp32s3-espidf/release/pith-recovery
+
+# Save the bare recovery app image (for archiving / a release asset).
+image:
+    cargo build --release
+    espflash save-image --chip esp32s3 \
+        target/xtensa-esp32s3-espidf/release/pith-recovery pith-recovery-xiao_s3.bin
+
+# Serial monitor only (console is on UART0 — needs a 3.3V USB-UART adapter).
+monitor port="":
+    espflash monitor {{ if port != "" { "-p " + port } else { "" } }}

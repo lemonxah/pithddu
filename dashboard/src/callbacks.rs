@@ -162,6 +162,10 @@ pub fn wire_callbacks(ui: &AppWindow, ctx: &Arc<Ctx>) {
         app.on_disconnect(move || crate::loops::dash_close(&c));
         let c = ctx.clone();
         app.on_sync_device(move || crate::loops::sync_from_device(&c));
+        let c = ctx.clone();
+        app.on_simulate(move |on| {
+            c.sim_active.store(on, std::sync::atomic::Ordering::SeqCst);
+        });
         app.on_minimize(|| {});
         let c = ctx.clone();
         ui.global::<DeviceLog>().on_clear(move || {

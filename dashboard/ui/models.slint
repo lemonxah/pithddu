@@ -488,10 +488,12 @@ export global AppState {
     in property <string> sync-status: "";  // transient feedback for the "Sync device" pull
     in-out property <int> units: 0;        // 0 KM/H, 1 MPH
     in-out property <length> win-h;        // live window height (so popups can flip near the bottom)
+    in-out property <bool> sim-on: false;  // "Simulate" test-feed toggle
 
     callback connect();
     callback disconnect();
     callback sync-device();
+    callback simulate(bool /*on*/);        // start/stop the animated test telemetry feed
     callback minimize();
     callback close();
 }

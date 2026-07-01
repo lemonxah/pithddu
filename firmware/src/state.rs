@@ -5,12 +5,109 @@
 //! renders, Phase 5). Guarded by a single Mutex since both the USB task and the
 //! CDC poll loop dispatch commands.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
 use serde::{Deserialize, Serialize};
 
 const NS: &str = "dash";
+
+/// Consecutive incomplete boots that force the on-device recovery (BIOS). The
+/// counter is bumped before the risky init ([`boot_attempt_begin`]) and cleared
+/// once we've run stably ([`boot_mark_ok`]); a crash before that leaves it bumped,
+/// so a wedged image climbs here instead of silently rolling back forever.
+pub const SAFE_MODE_THRESHOLD: u8 = 3;
+
+/// Set when the boot-loop guard trips or the user picks Safe boot: the display task
+/// skips the (suspect) saved layout and the main loop stops auto-clearing the
+/// boot-fail counter, so the failure stays visible until the user resolves it.
+static SAFE_MODE: AtomicBool = AtomicBool::new(false);
+pub fn safe_mode() -> bool {
+    SAFE_MODE.load(Ordering::Relaxed)
+}
+pub fn set_safe_mode(on: bool) {
+    SAFE_MODE.store(on, Ordering::Relaxed);
+}
+
+/// Bump the persisted consecutive-boot-fail counter and return the new value. Call
+/// once at boot, before the risky init. [`boot_mark_ok`] resets it after we've run
+/// stably; `>= SAFE_MODE_THRESHOLD` means the last boots all crashed → force BIOS.
+pub fn boot_attempt_begin() -> u8 {
+    with(|s| {
+        let Some(nvs) = s.nvs.as_ref() else { return 1 };
+        let n = nvs
+            .get_u8("bootfail")
+            .ok()
+            .flatten()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let _ = nvs.set_u8("bootfail", n);
+        n
+    })
+}
+
+/// The current persisted boot-fail counter (post-increment for this boot). The
+/// display task subtracts 1 to show how many *previous* boots failed.
+pub fn boot_fail_count() -> u8 {
+    with(|s| {
+        s.nvs
+            .as_ref()
+            .and_then(|n| n.get_u8("bootfail").ok().flatten())
+            .unwrap_or(0)
+    })
+}
+
+/// Record which OTA slot (0/1) holds the active main firmware, so the recovery app
+/// chain-loads it on the next boot. Written by the OTA completion path: instead of
+/// pointing otadata at the new image ourselves, we hand the choice to recovery
+/// (which owns boot-slot selection in the recovery-first model).
+pub fn set_main_slot(idx: u8) {
+    with(|s| {
+        if let Some(nvs) = s.nvs.as_ref() {
+            let _ = nvs.set_u8("mainslot", idx & 1);
+        }
+    });
+}
+
+/// Mark this boot as good (clears the fail counter). Skips the NVS write when it's
+/// already zero so a healthy boot doesn't wear flash.
+pub fn boot_mark_ok() {
+    with(|s| {
+        if let Some(nvs) = s.nvs.as_ref() {
+            if nvs.get_u8("bootfail").ok().flatten().unwrap_or(0) != 0 {
+                let _ = nvs.set_u8("bootfail", 0);
+            }
+        }
+    })
+}
+
+/// Wipe the saved on-device layout (the suspect blob after a boot loop) so the next
+/// boot comes up clean. Empties the NVS keys + the in-memory copies and bumps
+/// ui_ver so the display task drops its render caches.
+pub fn reset_layout() {
+    with(|s| {
+        s.set_str("uijson", "");
+        s.set_str("racejson", "");
+        s.set_str("edjson", "");
+        s.ui_json.clear();
+        s.race_json.clear();
+        s.editor_json.clear();
+        s.pending_ui = None;
+        s.ui_doc = None;
+        s.ui_ver = s.ui_ver.wrapping_add(1);
+    })
+}
+
+/// Drop the active layout for THIS session only (in-memory), leaving NVS intact —
+/// used by Safe boot so the suspect doc isn't parsed/rendered this run but survives
+/// a later normal boot.
+pub fn forget_session_layout() {
+    with(|s| {
+        s.pending_ui = None;
+        s.ui_doc = None;
+    })
+}
 
 /// Runtime GPIO pin map for displays, touch and the LED strip (mirrors the legacy
 /// device_pins_t). Defaults = the Seeed XIAO S3 stock wiring.
@@ -24,6 +121,10 @@ pub struct DevicePins {
     pub disp2_cs: i32,
     pub touch1_cs: i32,
     pub touch2_cs: i32,
+    /// Panel backlight enable (active-high). Default D3 / GPIO4. `serde(default)` so
+    /// configs saved before this field existed still deserialize (keep their pins).
+    #[serde(default = "bl_default")]
+    pub backlight: i32,
     pub led_din: i32,
     pub race_screen: i32,
     pub led_rev: i32,
@@ -32,12 +133,17 @@ pub struct DevicePins {
     pub led_rgbw: i32,
 }
 
+fn bl_default() -> i32 {
+    4
+}
+
 impl Default for DevicePins {
     fn default() -> Self {
         DevicePins {
             sclk: 7, mosi: 9, miso: 8, dc: 2,
             disp1_cs: 1, disp2_cs: 3,
             touch1_cs: 5, touch2_cs: 6,
+            backlight: 4,
             led_din: 43,
             race_screen: 0,
             led_rev: 12, led_tc: 2, led_abs: 2, led_rgbw: 1,
@@ -346,6 +452,7 @@ impl AppState {
         p.disp2_cs = pin(p.disp2_cs, "disp2_cs");
         p.touch1_cs = pin(p.touch1_cs, "touch1_cs");
         p.touch2_cs = pin(p.touch2_cs, "touch2_cs");
+        p.backlight = pin(p.backlight, "backlight");
         p.led_din = pin(p.led_din, "led_din");
         if let Some(n) = v.get("race_screen").and_then(|x| x.as_i64()) {
             p.race_screen = if n == 1 { 1 } else { 0 };
@@ -380,7 +487,7 @@ impl AppState {
 {{\"role\":\"side\",\"w\":480,\"h\":320,\"touch\":true}}],\
 \"leds\":{{\"rev\":{lr},\"tc\":{lt},\"abs\":{la},\"separate\":true}},\
 \"pins\":{{\"sclk\":{sclk},\"mosi\":{mosi},\"miso\":{miso},\"dc\":{dc},\
-\"disp1_cs\":{d1},\"disp2_cs\":{d2},\"touch1_cs\":{t1},\"touch2_cs\":{t2},\"led_din\":{din},\
+\"disp1_cs\":{d1},\"disp2_cs\":{d2},\"touch1_cs\":{t1},\"touch2_cs\":{t2},\"backlight\":{bl},\"led_din\":{din},\
 \"race_screen\":{rs},\"led_rev\":{lr},\"led_tc\":{lt},\"led_abs\":{la},\"led_rgbw\":{lw}}},\
 \"disp\":{{\"rot\":{rot},\"fh\":{fh},\"fv\":{fv},\"bgr\":{bgr},\"inv\":{inv}}}}}\n",
             fw = env!("CARGO_PKG_VERSION"),
@@ -388,7 +495,7 @@ impl AppState {
             lr = p.led_rev, lt = p.led_tc, la = p.led_abs, lw = p.led_rgbw,
             sclk = p.sclk, mosi = p.mosi, miso = p.miso, dc = p.dc,
             d1 = p.disp1_cs, d2 = p.disp2_cs, t1 = p.touch1_cs, t2 = p.touch2_cs,
-            din = p.led_din, rs = p.race_screen,
+            bl = p.backlight, din = p.led_din, rs = p.race_screen,
             rot = self.disp_rot, fh = self.disp_flip_h, fv = self.disp_flip_v,
             bgr = self.disp_bgr, inv = self.disp_inv,
         )

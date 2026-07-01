@@ -1,0 +1,17 @@
+# Pith DDU partition table — 8 MB flash, factory recovery + dual-OTA main.
+#
+#   factory : pith-recovery app (the on-device BIOS / recovery console). The
+#             bootloader auto-boots this when the main slot is bricked + rollback
+#             is exhausted, and the main firmware can jump here on demand.
+#   ota_0/1 : the main firmware (A/B OTA slots + rollback), unchanged.
+#
+# App partitions are 64 KiB-aligned. Offsets are explicit so a full flash of either
+# image lays down an identical table (the bootloader reads it to map each slot).
+#
+# Name,     Type, SubType,  Offset,    Size
+nvs,        data, nvs,      0x9000,    0x6000,
+otadata,    data, ota,      0xf000,    0x2000,
+phy_init,   data, phy,      0x11000,   0x1000,
+factory,    app,  factory,  0x20000,   0x180000,
+ota_0,      app,  ota_0,    0x1a0000,  0x300000,
+ota_1,      app,  ota_1,    0x4a0000,  0x300000,

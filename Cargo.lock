@@ -3840,6 +3840,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pith-bios"
+version = "0.1.0"
+dependencies = [
+ "embedded-graphics",
+ "pith-ui",
+]
+
+[[package]]
 name = "pith-core"
 version = "0.9.5"
 dependencies = [
@@ -3849,7 +3857,7 @@ dependencies = [
 
 [[package]]
 name = "pith-dashboard"
-version = "0.7.8"
+version = "0.7.10"
 dependencies = [
  "flate2",
  "futures-util",

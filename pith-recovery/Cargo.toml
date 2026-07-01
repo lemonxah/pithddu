@@ -1,0 +1,42 @@
+[package]
+name = "pith-recovery"
+version = "0.1.0"
+edition = "2021"
+resolver = "2"
+rust-version = "1.77"
+description = "Pith DDU recovery app (ESP32-S3) — boots first from the factory partition, shows a touchscreen countdown, then chain-loads the main firmware. The on-device BIOS / recovery console."
+repository = "https://github.com/lemonxah/pithddu"
+license = "MIT"
+
+[[bin]]
+name = "pith-recovery"
+path = "src/main.rs"
+
+# Own esp sub-workspace (its own esp toolchain + xtensa target), like firmware/.
+[workspace]
+
+[profile.release]
+opt-level = "s"
+
+[profile.dev]
+debug = true
+opt-level = "z"
+
+[dependencies]
+log = "0.4"
+esp-idf-svc = "0.51"
+# The recovery UI (boot splash + menu), shared with the firmware's in-app BIOS.
+pith-bios = { path = "../pith-bios" }
+# Display stack: ST7796 panels + XPT2046 touch on the shared SPI2 bus.
+embedded-graphics = "0.8"
+embedded-hal = "1"
+mipidsi = "0.9"
+
+[build-dependencies]
+embuild = "0.33"
+
+# WS2812/SK6812 LED-strip driver (RMT) — recovery uses it only to blank the shift
+# lights on boot (they power on with a stale frame). Same component as the firmware.
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "espressif/led_strip", version = "~2.5.5" }
+bindings_header = "src/led_strip_bindings.h"

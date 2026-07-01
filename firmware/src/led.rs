@@ -60,8 +60,12 @@ fn parse_car(json: &str) -> Option<CarData> {
     // zone near redline. `skip` shifts our read window up.
     let skip = raw_n.saturating_sub(CAR_LED_MAX);
 
+    // redlineBlinkInterval from the car data solely decides the redline flash:
+    //   0  -> no flash (LEDs hold solid at redline)
+    //   >0 -> strobe at that ms interval (clamped to >=20 ms so it stays readable)
+    // An ABSENT field defaults to 100 ms (flash) for back-compat with older data.
     let bi = v.get("redlineBlinkInterval").and_then(|x| x.as_i64()).unwrap_or(100);
-    c.blink_ms = if bi < 20 { 100 } else { bi as u16 };
+    c.blink_ms = if bi <= 0 { 0 } else { bi.max(20) as u16 };
 
     // ledColor[0] is the redline color; [1..] per-LED. Keep upper n -> skip+i+1.
     if let Some(lc) = v.get("ledColor").and_then(|x| x.as_array()) {

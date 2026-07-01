@@ -164,15 +164,10 @@ impl Dash {
     pub fn ota_upload(&mut self, img: &[u8], mut on_progress: impl FnMut(i32)) -> bool {
         self.drain_t();
         self.tx_str(&format!("@OTA{}\n", img.len()));
-        // esp_ota_begin erases the target slot before replying OTAREADY — that's a
-        // few seconds for a ~750 KB image, more when the device is also servicing
-        // the GUI. Give it a generous window so the handshake doesn't false-fail.
-        let handshake = self.rx_line(12000);
-        if !handshake.contains("OTAREADY") {
-            self.logln(&format!(
-                "OTA: expected OTAREADY, got '{}'",
-                if handshake.is_empty() { "(no reply)" } else { &handshake }
-            ));
+        // Wait for OTAREADY, skipping any stale/interleaved lines (a late `?`-status
+        // or telemetry reply on the shared channel can land here and false-fail the
+        // handshake). esp_ota_begin erases the slot first, so allow a generous window.
+        if !self.ota_wait("OTAREADY", 12000) {
             return false;
         }
         const ACK: usize = 2048;
@@ -185,26 +180,60 @@ impl Dash {
             }
             sent = end;
             if sent < img.len() {
-                let k = self.rx_line(6000);
-                if !k.contains('K') || k.contains("ERR") {
-                    self.logln(&format!("OTA: failed at {sent}"));
+                if !self.ota_wait("K", 6000) {
+                    self.logln(&format!("OTA: no ack at {sent}"));
                     return false;
                 }
             }
             on_progress((sent * 100 / img.len()) as i32);
         }
-        let done = self.rx_line(8000);
-        self.logln(&format!(
-            "OTA: {}",
-            if done.is_empty() {
-                "no reply (device rebooting)"
-            } else {
-                &done
+        // Device sends OTADONE then reboots — a stale line or a missing reply
+        // (already rebooting) is fine; only an explicit OTAERR is a failure.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(8000);
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                self.logln("OTA: done (device rebooting)");
+                return true;
             }
-        ));
-        if done.contains("OTAERR") {
-            return false;
+            let line = self.rx_line((remaining.as_millis() as u64).clamp(1, 2000));
+            let t = line.trim();
+            if t.contains("OTADONE") {
+                self.logln("OTA: OTADONE");
+                return true;
+            }
+            if t.contains("OTAERR") {
+                self.logln(&format!("OTA: device error: {t}"));
+                return false;
+            }
         }
-        true
+    }
+
+    /// Wait for an OTA reply containing `needle`, skipping unrelated status /
+    /// telemetry / log lines that share the channel (e.g. a second HID client's
+    /// `?` reply). Returns false on an explicit OTAERR or on timeout.
+    fn ota_wait(&mut self, needle: &str, ms: u64) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                self.logln(&format!("OTA: timed out waiting for {needle}"));
+                return false;
+            }
+            let line = self.rx_line((remaining.as_millis() as u64).clamp(1, 2000));
+            let t = line.trim();
+            if t.is_empty() {
+                continue;
+            }
+            if t.contains("OTAERR") {
+                self.logln(&format!("OTA: device error: {t}"));
+                return false;
+            }
+            // The reply tokens (K / OTAREADY / OTADONE) arrive on their own line.
+            if t == needle || (needle.len() > 2 && t.contains(needle)) {
+                return true;
+            }
+            // else: stale/interleaved line — skip and keep waiting.
+        }
     }
 }

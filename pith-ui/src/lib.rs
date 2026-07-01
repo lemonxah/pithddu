@@ -22,11 +22,10 @@ use embedded_graphics::{
     primitives::{Circle, Line, PrimitiveStyle, Rectangle, RoundedRectangle},
 };
 use serde::{Deserialize, Serialize};
-use u8g2_fonts::{
-    fonts,
-    types::{FontColor, HorizontalAlignment, VerticalPosition},
-    FontRenderer,
-};
+use u8g2_fonts::{fonts, types::FontColor, FontRenderer};
+// Re-exported so sibling crates (e.g. pith-bios) can call the public draw
+// primitives ([`text`], [`fill_round`]) without a direct u8g2-fonts dependency.
+pub use u8g2_fonts::types::{HorizontalAlignment, VerticalPosition};
 
 use pith_core::format::{self, Fmt, RuleOp};
 pub use pith_core::format::{Fmt as ValueFmt, Pal, RuleOp as Op};
@@ -331,7 +330,11 @@ pub fn builtin(
 // ============ render primitives (ported from firmware ui.rs) ============
 
 #[allow(clippy::too_many_arguments)]
-fn text<D: DrawTarget<Color = Rgb565>>(
+/// Shared text primitive: pick a u8g2 font by requested pixel height and render
+/// `s` aligned at (x,y). Public so sibling crates (pith-bios) draw with the same
+/// fonts as the rest of the UI.
+#[allow(clippy::too_many_arguments)]
+pub fn text<D: DrawTarget<Color = Rgb565>>(
     d: &mut D,
     s: &str,
     x: i32,
@@ -397,7 +400,9 @@ fn fill_rect<D: DrawTarget<Color = Rgb565>>(d: &mut D, x: i32, y: i32, w: i32, h
         .into_styled(PrimitiveStyle::with_fill(c))
         .draw(d);
 }
-fn fill_round<D: DrawTarget<Color = Rgb565>>(d: &mut D, x: i32, y: i32, w: i32, h: i32, r: i32, c: Rgb565) {
+/// Shared filled-rounded-rect primitive. Public so sibling crates (pith-bios)
+/// draw panels/buttons identically to the rest of the UI.
+pub fn fill_round<D: DrawTarget<Color = Rgb565>>(d: &mut D, x: i32, y: i32, w: i32, h: i32, r: i32, c: Rgb565) {
     let _ = RoundedRectangle::with_equal_corners(
         Rectangle::new(Point::new(x, y), Size::new(w.max(0) as u32, h.max(0) as u32)),
         Size::new(r as u32, r as u32),

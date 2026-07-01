@@ -107,8 +107,14 @@ pub fn segment_rgb(
         let gi = gear_index(t.gear);
         let rl = car.redline[gi] as i32;
         let over = rl > 0 && t.rpm >= rl;
-        let bm = if car.blink_ms != 0 { car.blink_ms as i64 } else { 100 };
-        let flash_on = (now_ms / bm) & 1 != 0;
+        // The car data solely controls the redline flash: `blink_ms == 0` means the
+        // car does NOT flash — hold the LEDs SOLID at/over redline; a non-zero value
+        // strobes at that interval. Colours are always the car's own `led_color`.
+        let flash_on = if car.blink_ms == 0 {
+            true
+        } else {
+            (now_ms / car.blink_ms as i64) & 1 != 0
+        };
         let off = ((count - car.led_count as i32) / 2).max(0); // center fewer LEDs
         let ci = i - off;
         if ci >= 0 && (ci as usize) < car.led_count {

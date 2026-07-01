@@ -32,6 +32,17 @@ fn main() {
     // led::spawn); the dashboard also re-pushes the live @C on reconnect.
     state::init();
 
+    // Recovery (factory) chain-loaded us; point the boot partition back at it so the
+    // NEXT reset returns to recovery — it's always the front door. Done early so even
+    // an early crash reboots into recovery rather than re-running this image.
+    ota::return_to_recovery_on_next_boot();
+
+    // Bump the persisted consecutive-boot-fail counter (cleared once we've run
+    // stably, see the main loop) so the recovery app can show "previous boot failed
+    // Nx" on its splash. The in-app BIOS is gone — recovery (factory) boots first
+    // and is the only on-device timer/menu now.
+    state::boot_attempt_begin();
+
     // Bring up the composite USB device (PHY + TinyUSB + device task).
     usb::init(serial);
 
@@ -50,11 +61,20 @@ fn main() {
     log::info!("USB up; image marked valid");
 
     let mut ticks: u32 = 0;
+    let mut boot_confirmed = false;
     loop {
         usb::poll_cdc(); // drain SimHub telemetry on CDC
         usb::poll_hid(); // drain HID-OUT bytes here (big stack) — the callback only buffers
         usb::pump_log_tx(); // flush queued logs to the GUI during quiet periods
         ota::check_timeout();
+
+        // Ran stably past the risky boot window (~5 s) -> declare this boot good,
+        // which clears the fail counter. Skipped in SAFE MODE so a forced-recovery
+        // failure stays visible until the user resolves it.
+        if !boot_confirmed && ticks > 1000 && !state::safe_mode() {
+            boot_confirmed = true;
+            state::boot_mark_ok();
+        }
 
         if ota::should_reboot() {
             log::warn!("OTA complete — rebooting into the new image");

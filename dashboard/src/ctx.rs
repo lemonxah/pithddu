@@ -12,6 +12,9 @@ pub struct Ctx {
     pub rt: tokio::runtime::Handle,
     pub running: Arc<AtomicBool>,
     pub ota_active: Arc<AtomicBool>,
+    /// GUI "Simulate" toggle — when set, sim_loop streams a full animated test
+    /// telemetry feed (every field) + cycles car shift-light profiles to the device.
+    pub sim_active: Arc<AtomicBool>,
     pub busy: Arc<AtomicBool>,
     pub car_gen: Arc<std::sync::atomic::AtomicUsize>,
     pub build_cancel: Arc<AtomicBool>,

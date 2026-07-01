@@ -124,6 +124,171 @@ pub(crate) fn push_sim_frame(
     }
 }
 
+/// GUI "Simulate" test feed. Idles until `ctx.sim_active` is set (the Simulate
+/// button). When on, it streams a fully-animated telemetry frame — EVERY field the
+/// device can render (revs/gears/speed, laps + sectors, tyres/pressures/wear/brakes,
+/// inputs, aids, control states, flags, fuel, hybrid/VE) — and every ~4 s switches
+/// to the next car in the library so the shift-light LED profile visibly changes.
+pub fn sim_loop(ctx: Arc<Ctx>) {
+    let mut last_push = Instant::now();
+    let mut last_preview = Instant::now();
+    let mut t0 = Instant::now();
+    let mut last_car = Instant::now() - Duration::from_secs(5); // switch a car immediately
+    let mut car_idx = 0usize;
+    let mut cur_redline = 8000i32; // updated per car so the rev sweep reaches ITS redline
+    loop {
+        if !ctx.running.load(Ordering::SeqCst) {
+            return;
+        }
+        if !ctx.sim_active.load(Ordering::SeqCst) {
+            t0 = Instant::now();
+            std::thread::sleep(Duration::from_millis(120));
+            continue;
+        }
+        let secs = t0.elapsed().as_secs_f32();
+        let line = frame_from_telem(&sim_telem(secs, cur_redline));
+        push_sim_frame(&ctx, &line, "SIM", &mut last_push, &mut last_preview);
+
+        // Cycle car shift-light profiles (redline / LED count / colours) so the
+        // strip visibly changes per car — and rev to THAT car's redline so its
+        // exact shift-light + flash behaviour shows (a car whose redline we never
+        // reach would never flash, which is the whole thing being tested).
+        if last_car.elapsed() >= Duration::from_secs(4) {
+            last_car = Instant::now();
+            let picked = {
+                let s = ctx.lock();
+                let cars: Vec<(String, i32)> = s
+                    .all_cars
+                    .iter()
+                    .filter(|c| !c.name.is_empty())
+                    .map(|c| (c.name.clone(), c.redline))
+                    .collect();
+                (!cars.is_empty()).then(|| cars[car_idx % cars.len()].clone())
+            };
+            if let Some((name, redline)) = picked {
+                car_idx += 1;
+                if redline > 4000 {
+                    cur_redline = redline;
+                }
+                let mut s = ctx.lock();
+                s.detected_model = name.clone();
+                crate::net::cardata::auto_apply_car_model(&ctx, &mut s, &name);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(16));
+    }
+}
+
+/// Build one fully-populated animated telemetry frame at time `t` seconds. Every
+/// field is driven so each device widget visibly updates. `redline` is the current
+/// car's redline RPM — the rev sweep peaks just above it so the device shows that
+/// car's actual shift-light + (data-driven) flash behaviour, not a fixed range.
+fn sim_telem(t: f32, redline: i32) -> pith_core::simhub::Telemetry {
+    let mut d = pith_core::simhub::Telemetry::default();
+    let rev = ((t * 0.85).sin() * 0.5 + 0.5).clamp(0.0, 1.0); // 0..1 rev cycle
+    let slow = (t * 0.15).sin() * 0.5 + 0.5; // slow 0..1
+    let drain = (t * 0.02) % 1.0; // 0..1 slowly, resets
+
+    // Engine / drivetrain — rev peaks a little over the car's redline so its own
+    // shift-light thresholds + flash-at-redline (from the car data) are exercised.
+    let redline = if redline > 4000 { redline } else { 8000 };
+    d.max_rpm = redline * 105 / 100;
+    d.shift_rpm = redline;
+    d.rpm = (rev * d.max_rpm as f32) as i32;
+    let gears = [b'N', b'1', b'2', b'3', b'4', b'5', b'6', b'7'];
+    d.gear = gears[((t * 0.5) as usize) % gears.len()];
+    d.speed_kmh = (rev * 315.0) as i32;
+
+    // Timing + sectors
+    d.cur_lap_ms = (t * 1000.0) as i32 % 118_000;
+    d.last_lap_ms = 84_321;
+    d.best_lap_ms = 83_012;
+    d.pb_lap_ms = 82_880;
+    d.est_lap_ms = 83_400;
+    d.delta_ms = ((t * 0.9).sin() * 8000.0) as i32;
+    d.s1_ms = 27_500 + ((t * 1.1).sin() * 1500.0) as i32;
+    d.s2_ms = 31_200 + ((t * 1.3).cos() * 1500.0) as i32;
+    d.s3_ms = 24_100 + ((t * 0.7).sin() * 1500.0) as i32;
+    d.bs1_ms = 27_000;
+    d.bs2_ms = 30_800;
+    d.bs3_ms = 23_900;
+
+    // Race
+    d.position = 3;
+    d.field_size = 20;
+    d.laps_done = 5;
+    d.total_laps = 30;
+    d.laps_left = 25;
+
+    // Engine sensors + aids levels
+    d.water_c = 88 + (slow * 10.0) as i32;
+    d.oil_c = 102 + (slow * 12.0) as i32;
+    d.oil_press_x10 = 52;
+    d.boost_kpa = (rev * 180.0) as i32;
+    d.tc = 3;
+    d.abs = 2;
+    d.brake_bias_x10 = 545;
+
+    // Fuel
+    d.fuel_cap_dl = 1100;
+    d.fuel_dl = (1100.0 * (1.0 - drain)) as i32;
+    d.fuel_per_lap_ml = 2400;
+    d.fuel_laps_x10 = 123;
+
+    // Tyre surface temps (3 zones/corner, 0.1°C) — hotter with revs, per-corner spread
+    let base = 78.0 + rev * 25.0;
+    let z = |off: f32| ((base + off) * 10.0) as i32;
+    d.tt_fl_i = z(6.0); d.tt_fl_m = z(3.0); d.tt_fl_o = z(0.0);
+    d.tt_fr_i = z(5.0); d.tt_fr_m = z(2.0); d.tt_fr_o = z(-1.0);
+    d.tt_rl_i = z(8.0); d.tt_rl_m = z(5.0); d.tt_rl_o = z(2.0);
+    d.tt_rr_i = z(7.0); d.tt_rr_m = z(4.0); d.tt_rr_o = z(1.0);
+    d.tt_avg_fl = z(3.0); d.tt_avg_fr = z(2.0); d.tt_avg_rl = z(5.0); d.tt_avg_rr = z(4.0);
+    d.tt_carc_fl = z(-8.0); d.tt_carc_fr = z(-9.0); d.tt_carc_rl = z(-6.0); d.tt_carc_rr = z(-7.0);
+
+    // Pressures (0.1 kPa) + wear (% remaining)
+    d.tp_fl = 1720; d.tp_fr = 1735; d.tp_rl = 1680; d.tp_rr = 1695;
+    let wear = (100.0 - drain * 40.0) as i32;
+    d.tw_fl = wear; d.tw_fr = wear - 2; d.tw_rl = wear - 4; d.tw_rr = wear - 3;
+
+    // Brake temps (°C)
+    let bt = 320 + (rev * 280.0) as i32;
+    d.bt_fl = bt; d.bt_fr = bt - 15; d.bt_rl = bt - 120; d.bt_rr = bt - 130;
+
+    // Inputs
+    d.throttle = (rev * 100.0) as i32;
+    d.brake = ((1.0 - rev) * 90.0) as i32;
+    d.clutch = 0;
+    d.steer = ((t * 1.2).sin() * 95.0) as i32;
+
+    // Live aids engagement + control states (cycle so the LEDs / toggles flash)
+    d.tc_active = if (t * 3.0).sin() > 0.6 { 1 } else { 0 };
+    d.abs_active = if (t * 2.5).cos() > 0.7 { 1 } else { 0 };
+    d.headlights = if (t * 0.2).sin() > 0.0 { 1 } else { 0 };
+    d.wipers = if (t * 0.13).sin() > 0.3 { 1 } else { 0 };
+    d.pit_limiter = if (t * 0.1).cos() > 0.8 { 1 } else { 0 };
+    d.ignition = 1;
+
+    // Flag cycles 0..6; track position sweeps
+    d.flag = (t * 0.25) as i32 % 7;
+    d.track_pct = (t * 100.0) as i32 % 1000;
+
+    // Hybrid / ERS / VE
+    d.battery_pct = (slow * 1000.0) as i32;
+    d.ers_state = 1 + ((t * 0.4) as i32 % 3);
+    d.virtual_energy = (slow * 1000.0) as i32;
+    d.ve_per_lap = 42;
+    d.fuel_is_ve = 0;
+
+    // Compounds (medium)
+    d.comp_fl = 1; d.comp_fr = 1; d.comp_rl = 1; d.comp_rr = 1;
+
+    // Extra TC channels
+    d.tc_slip = (rev * 100.0) as i32;
+    d.tc_cut = (rev * 80.0) as i32;
+
+    d
+}
+
 /// Handle one inbound SimHub text frame line (`$…`, `@CM…`, `@MAP…`). This is the
 /// exact path the TCP listener used, kept intact so the (UDP-updated) SimHub
 /// plugin still delivers the full field set, car model and track unchanged.
