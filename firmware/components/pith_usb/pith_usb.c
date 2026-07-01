@@ -88,7 +88,11 @@ static const tusb_desc_device_t s_device_desc = {
     .bMaxPacketSize0    = CFG_TUD_ENDPOINT0_SIZE,
     .idVendor           = 0x303A,   // Espressif
     .idProduct          = 0x4002,
-    .bcdDevice          = 0x0100,
+    // v2 (bumped from 0x0100): the HID descriptor changed from Gamepad -> Joystick,
+    // and Steam caches its controller profile by device identity (VID:PID:version).
+    // Bumping the version changes the SDL GUID so Steam re-detects it as a fresh
+    // joystick instead of applying the stale gamepad mapping (Guide -> Big Picture).
+    .bcdDevice          = 0x0200,
     .iManufacturer      = 0x01,
     .iProduct           = 0x02,
     .iSerialNumber      = 0x03,

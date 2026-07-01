@@ -9,7 +9,16 @@ pithddu/
 │               buttons, the race-screen layout and per-car data; build/flash firmware;
 │               mirror live telemetry. → binary `pith-dashboard`
 ├─ firmware/    ESP32-S3 (XIAO S3) firmware (Rust + esp-idf, embedded-graphics + mipidsi).
-│               → binary `pithddu`. Its own esp toolchain + Xtensa target.
+│               → binary `pithddu`. Lives in the `ota_0`/`ota_1` slots. Its own esp
+│               toolchain + Xtensa target.
+├─ pith-recovery/  ESP32-S3 recovery app (Rust + esp-idf) flashed to the `factory`
+│               partition. Boots FIRST on every power-up: a touchscreen countdown
+│               ("N seconds till boot" — tap for recovery), then chain-loads the main
+│               firmware. The recovery menu can boot a slot, reset config, or reboot.
+│               → binary `pith-recovery`. Its own esp sub-workspace.
+├─ pith-bios/   no_std UI crate for the recovery/boot screens (splash countdown +
+│               recovery menu), drawn with pith-ui's primitives so it matches every
+│               other screen. Shared by pith-recovery; the app owns all side-effects.
 ├─ pith-core/   Shared, host-testable pure logic: telemetry parse, wire formatting,
 │               field registry (codegen from firmware/main/field_registry.json). no_std.
 ├─ pith-sim/    Reusable telemetry sources: UDP game decoders (Forza/F1/AMS2/OutGauge),
@@ -31,11 +40,11 @@ pithddu/
 
 ## Workspaces
 
-The host crates (`dashboard`, `pith-core`, `pith-ui`) form one Cargo workspace at the
-repo root. The **firmware is a separate sub-workspace** — it needs the `esp` Rust
-toolchain and the `xtensa-esp32s3-espidf` target (`firmware/.cargo/config.toml`,
-`firmware/rust-toolchain.toml`), so it is **excluded** from the root workspace and
-path-depends on the shared crates (`../pith-core`).
+The host crates (`dashboard`, `pith-core`, `pith-ui`, `pith-bios`) form one Cargo
+workspace at the repo root. The **firmware and `pith-recovery` are each a separate
+sub-workspace** — they need the `esp` Rust toolchain and the `xtensa-esp32s3-espidf`
+target (`.cargo/config.toml`, `rust-toolchain.toml`), so they are **excluded** from
+the root workspace and path-depend on the shared crates (`../pith-core`, `../pith-bios`).
 
 ```sh
 # Host side (dashboard + shared crates) — stable toolchain
@@ -45,6 +54,9 @@ cargo run   -p pith-dashboard --example ui_preview   # live pith-ui device previ
 
 # Firmware — esp toolchain (source ~/export-esp.sh first)
 cd firmware && cargo build --release
+
+# Recovery app — same esp toolchain, flashed to the factory partition
+cd pith-recovery && cargo build --release
 ```
 
 The single source of truth for bindable telemetry fields is
@@ -133,12 +145,37 @@ today; ACC broadcasting next), the shim/dashboard forward it, and the device's
 **Relatives** (cars nearest you on track, signed gaps) / **Standings** (race order,
 gap to leader) widget renders it. Place either from the race-editor palette.
 
+## Boot & recovery
+
+The device never boots the main firmware directly. The flash carries three app
+partitions — one `factory` recovery slot plus dual-OTA `ota_0`/`ota_1` main slots
+(`firmware/partitions.csv`):
+
+```
+factory  → pith-recovery   (the on-device BIOS / recovery console)
+ota_0    → main firmware   (A slot)
+ota_1    → main firmware   (B slot)
+```
+
+On every power-up the bootloader runs **pith-recovery** (factory) first. It shows a
+3-second touchscreen countdown ("N seconds till boot"); if untouched it chain-loads
+the main slot, and the main firmware sets the next boot back to `factory` so a reset
+always returns to recovery. Tapping the screen opens the **recovery menu** (boot
+firmware / reset config / mount as USB / reboot). The bootloader also falls back to
+recovery automatically if the main slot is bricked and OTA rollback is exhausted.
+
+Because recovery lives in its own partition, it flashes **separately** from the main
+firmware — a firmware OTA/flash never overwrites it (see `pith-recovery/justfile`).
+OTA writes the inactive main slot; the next boot's recovery step chain-loads it.
+
 ## Releases
 
 Independent release streams from this one repo, via tag prefixes:
 
 - `dashboard-v*` → desktop app release (Linux tarball + `.deb`, Windows zip)
 - `firmware-v*`  → firmware app image (`pithddu-<board>.bin`)
+- recovery (`pith-recovery`) is flashed to the `factory` partition separately; it
+  changes rarely and is not part of the firmware OTA stream.
 
 ## History
 

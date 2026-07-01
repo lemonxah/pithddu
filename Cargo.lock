@@ -3857,7 +3857,7 @@ dependencies = [
 
 [[package]]
 name = "pith-dashboard"
-version = "0.7.10"
+version = "0.7.11"
 dependencies = [
  "flate2",
  "futures-util",
